@@ -34,6 +34,14 @@ Bu dosya her oturumun başında okunur. Kısa tutulur; ayrıntı `tasks/` ve `do
 - Bir hata düzeltince veya kullanıcı seni düzeltince `tasks/lessons.md`'ye ekle: belirti, **kök neden**, düzeltme, tekrarını önleyen kontrol.
 - Hata bildirimi (log, CI çıktısı, başarısız test) geldiğinde el tutulmasını bekleme: logdan kök nedeni bul ve düzelt.
 
+## Windows araçları
+- Python için **`py`** komutunu kullan. `python` Windows Store kısayoluna takılabilir.
+  Örnekler: `py -m pip install ...`, `py scripts\check_dependencies.py`.
+- pre-commit: **commit'ten önce** `py -m pre_commit run --all-files` çalıştır (CI aynı kontrolü yapar).
+  `pre-commit.exe` PATH'te olmayabilir; modül olarak çalıştır.
+- vcpkg: `FLOWGET_VCPKG_ROOT=C:\Users\Enes\vcpkg` tanımlıdır. Visual Studio'nun gömülü vcpkg'ını kullanma.
+- Yeni terminal/OpenCode oturumu açmadan ortam değişkeni değişiklikleri görünmez.
+
 ## Git
 - Conventional commits (`feat(core): ...`, `fix(build): ...`, `docs: ...`). Küçük, mantıklı commit'ler.
 - **Commit'le ama `git push` yapma.** Push'u kullanıcı yapar.
