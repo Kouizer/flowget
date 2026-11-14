@@ -1,0 +1,93 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CTEST_OUTPUT_ON_FAILURE: 1
+
+jobs:
+  windows:
+    name: Windows x64 (MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/windows-x64/_deps
+          key: deps-windows-${{ hashFiles('tests/CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake --preset windows-x64
+
+      - name: Build
+        run: cmake --build --preset windows-x64
+
+      - name: Test
+        run: ctest --preset windows-x64
+
+      - name: Smoke test CLI
+        run: ./build/windows-x64/cli/flowget-cli.exe --version
+
+  linux:
+    name: Linux x64 (Clang, ASan/UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang clang-tidy
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/linux-x64/_deps
+            build/linux-x64-asan/_deps
+          key: deps-linux-${{ hashFiles('tests/CMakeLists.txt') }}
+
+      - name: Configure (debug)
+        run: cmake --preset linux-x64
+
+      - name: Build (debug)
+        run: cmake --build --preset linux-x64
+
+      - name: Test (debug)
+        run: ctest --preset linux-x64
+
+      - name: Configure (sanitizers)
+        run: cmake --preset linux-x64-asan
+
+      - name: Build (sanitizers)
+        run: cmake --build --preset linux-x64-asan
+
+      - name: Test (sanitizers)
+        run: ctest --preset linux-x64-asan
+
+      - name: pre-commit (clang-format + hygiene, pinned versions)
+        run: pipx run pre-commit run --all-files --show-diff-on-failure
+
+      # Advisory until M1: clang-tidy's diagnostics differ between toolchain versions, and this job
+      # cannot be validated locally against the CI image. It becomes blocking once the M1 baseline
+      # is clean.
+      - name: clang-tidy (advisory)
+        continue-on-error: true
+        run: |
+          clang-tidy --version
+          git ls-files 'core/*.cpp' 'cli/*.cpp' | xargs clang-tidy -p build/linux-x64

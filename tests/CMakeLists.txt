@@ -1,0 +1,32 @@
+include(FetchContent)
+
+# Pinned release: build machines are offline-capable after the first configure, and CI gets a
+# reproducible dependency. Bump deliberately, never automatically.
+FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.17.0
+    GIT_SHALLOW TRUE
+    EXCLUDE_FROM_ALL)
+
+set(gtest_force_shared_crt
+    ON
+    CACHE BOOL "" FORCE)
+set(INSTALL_GTEST
+    OFF
+    CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(googletest)
+
+add_executable(flowget_unit_tests unit/version_test.cpp)
+target_link_libraries(flowget_unit_tests PRIVATE FlowGet::core GTest::gtest_main)
+
+flowget_set_warnings(flowget_unit_tests)
+
+# `gtest_discover_tests` runs the binary with `--gtest_output=json:<path>` after linking. GoogleTest
+# opens that path with the ANSI code page, so a checkout below a non-ASCII directory (e.g.
+# "Varsayılan Proje") fails the *build*. Register the suite as one CTest entry instead; GoogleTest
+# still reports per-test results, and `--gtest_filter` is available for focused runs.
+# See tasks/lessons.md (2026-11-14).
+add_test(NAME flowget_unit_tests COMMAND flowget_unit_tests)
+set_tests_properties(flowget_unit_tests PROPERTIES TIMEOUT 120)

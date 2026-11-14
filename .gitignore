@@ -1,0 +1,50 @@
+# Build output
+/build/
+/out/
+/install/
+CMakeUserPresets.json
+compile_commands.json
+
+# IDE / editor
+.vs/
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# C++ tooling
+.cache/
+*.gch
+*.pch
+/clang-tidy-*
+
+# Test / runtime artifacts
+/tests/tmp/
+*.log
+*.part
+*.flowget
+
+# Flutter / Dart (M3+)
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/build/
+app/windows/flutter/ephemeral/
+app/android/.gradle/
+app/android/local.properties
+app/android/key.properties
+*.jks
+*.keystore
+
+# Node (extension tooling, M4+)
+extension/node_modules/
+node_modules/
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

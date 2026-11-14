@@ -1,0 +1,24 @@
+# Tooling is pinned here so that a local run and CI produce byte-identical results.
+# Install once with `pipx install pre-commit` (or `pip install --user pre-commit`), then
+# `pre-commit install` to run on every commit.
+#
+# clang-format is pinned to the LLVM version shipped with VS 2026; bump both together.
+repos:
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v22.1.3
+    hooks:
+      - id: clang-format
+        types_or: [c, c++]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+        exclude: ^build/
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-merge-conflict
