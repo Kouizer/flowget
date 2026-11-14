@@ -104,6 +104,13 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
   ASan/UBSan testleri. Soket sarmalayıcıları dışında çıplak `send`/`recv`/`close` çağrısı yazılmaz;
   dönüş tipleri platform typedef'lerinden alınır.
 
-
-
-
+### 2026-11-14 — Dosya sonundaki fazla boş satır pre-commit `end-of-file-fixer`'ı kırdı
+- Belirti: Linux CI'da yalnızca pre-commit adımı kırıldı; `fix end of files` hook'u
+  `tasks/lessons.md` sonundaki fazladan boş satırları sildi ve CI "files were modified by this hook"
+  ile durdu.
+- Kök neden: dosya sonuna birden fazla boş satır bırakılmıştı; hook dosyayı yeniden yazdığı için
+  kontrol adımı değişiklik tespit etti. Sorun derleme değil, depo hijyeniydi.
+- Düzeltme: `tasks/lessons.md` tam olarak tek satır sonuyla bitecek şekilde temizlendi; depodaki
+  diğer izlenen dosyalar da tarandı (başka fazla boş satır veya satır sonu boşluğu yok).
+- Tekrarını önleyen kontrol: commit'ten önce `pre-commit run --all-files` çalıştır; pre-commit yoksa
+  her dosyanın sonunda yalnızca bir yeni satır kaldığını doğrula.
