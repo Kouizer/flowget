@@ -1,4 +1,11 @@
-add_library(flowget_core STATIC src/version.cpp src/api.cpp src/build_info.cpp)
+add_library(
+    flowget_core STATIC
+    src/version.cpp
+    src/api.cpp
+    src/build_info.cpp
+    src/http_client.cpp
+    src/curl_transport.cpp
+    src/single_stream_download.cpp)
 add_library(FlowGet::core ALIAS flowget_core)
 
 target_include_directories(

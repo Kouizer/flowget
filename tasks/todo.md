@@ -56,7 +56,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | Dilim | Kapsam | Durum |
 |---|---|---|
 | S1a | vcpkg manifesti (curl, openssl, sqlite3, spdlog) + toolchain/CI + GPL denylist betiği | **TAMAMLANDI** |
-| S1b | `HttpClient` + tek bağlantılı indirme + yerel test HTTP sunucusu | sırada |
+| S1b | `HttpClient` + tek bağlantılı indirme + yerel test HTTP sunucusu | **TAMAMLANDI** |
 | S2 | Probe (HEAD / `Range: bytes=0-0`, 206/200/416, metadata) | |
 | S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | |
@@ -69,6 +69,12 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 `OpenSSL 3.6.5`, `SQLite 3.54.1`, `spdlog 1.17.0` `flowget-cli --version` çıktısında;
 `ctest` 1/1 passed; `check_dependencies.py` temiz manifestte `exit=0`, GPL fixture'da `exit=1`
 (`libx264`, `some-agpl-package` yakalandı).
+
+**S1b kanıtı (2026-11-14):** `flowget-cli get <URL> -o <dosya>` tek bağlantıyla indiriyor; yerel test
+sunucusuna karşı 6 entegrasyon testi yeşil (`ctest` 2/2): gövde birebir yazılıyor (1 MiB), 404'te
+dosya bırakmıyor, `chunked` (Content-Length yok) doğru, 302 takip ediliyor, iptal `aborted` +
+kısmi dosya siliniyor, kopan bağlantı tespit ediliyor. CLI e2e: 5 MiB dosya indirildi, kaynak/hedef
+SHA-256 aynı (`B26D7E22…`), 404 → `exit=1`, kısmi dosya yok.
 
 ### Tasarım
 - [ ] `IStorage` arayüzü + `Win32Storage` (preallocate: `SetFileInformationByHandle(FileAllocationInfo)`),

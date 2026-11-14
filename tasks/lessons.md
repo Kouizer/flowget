@@ -59,4 +59,18 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
 - Tekrarını önleyen kontrol: Betik iki manifestli bir fixture üzerinde çalıştırılıyor (GPL örneği
   `exit=1`, temiz örnek `exit=0`) — S1a kanıtı `tasks/todo.md`'de.
 
+### 2026-11-14 — `windows.h` makroları test sunucusunun derlemesini bozdu
+- Belirti: `http_test_server.cpp` içinde `std::min(...)` çağrıları MSVC'de
+  `error C2589: '(': '::' sağ tarafında geçersiz belirteç` verdi; aynı dosyada `support/...` başlığı
+  da bulunamadı (`C1083`).
+- Kök neden: `winsock2.h` → `windows.h` zinciri `min`/`max` makrolarını tanımlıyor ve
+  `std::min(a, b)` metni makro tarafından bozuluyor; ayrıca integration test hedefinin include
+  dizinleri `tests/` kökünü içermiyordu, oysa test `"support/http_test_server.h"` diye ekliyor.
+- Düzeltme: Windows başlıklarından **önce** `NOMINMAX` (+ `WIN32_LEAN_AND_MEAN`) tanımlandı;
+  `flowget_integration_tests` hedefine `target_include_directories(... ${CMAKE_CURRENT_SOURCE_DIR})`
+  eklendi.
+- Tekrarını önleyen kontrol: `windows.h` kullanan her .cpp `NOMINMAX` ile başlar; ayrıca MSVC build'i
+  (`-W4 /WX`) bu sınıfı CI'da zaten yakalıyor.
+
+
 

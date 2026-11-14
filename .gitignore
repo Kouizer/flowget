@@ -27,6 +27,7 @@ compile_commands.json
 vcpkg_installed/
 
 # Test / runtime artifacts
+/tmp/
 /tests/tmp/
 *.log
 *.part
