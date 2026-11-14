@@ -1,3 +1,4 @@
+#include <flowget/build_info.h>
 #include <flowget/flowget.h>
 
 #include <cstdio>
@@ -27,6 +28,7 @@ int handle_flag(std::string_view flag) {
                     kProgramName.data(),
                     flowget_version_string(),
                     flowget_api_version());
+        std::printf("  %s\n", flowget::dependency_summary().c_str());
         return 0;
     }
     if (flag == "--help" || flag == "-h") {

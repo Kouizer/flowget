@@ -35,10 +35,9 @@
 - [x] `flowget-cli --version` çalışıyor → `flowget-cli 0.1.0 (C ABI v1)`
 - [x] README iskeleti: proje nedir, ne değildir (DRM/kapsam), yol haritası
 - [x] GTest 1.17.0 pinli `FetchContent`; 3 birim testi yeşil (`ctest` 1/1 geçti)
-- [ ] **M1'e taşındı:** `vcpkg.json` — ilk gerçek bağımlılıklar (curl, openssl, sqlite3, spdlog)
-      M1'de eklenecek. M0'da kullanılmayan bağımlılıkları bildirmek build süresini boşa harcar.
-- [ ] **M1'e taşındı:** `scripts/check_dependencies.py` (GPL denylist) — denetleyecek manifest
-      M1'de oluşacağı için o zaman anlamlı.
+- [x] **M1/S1a'da tamamlandı:** `vcpkg.json` — ilk gerçek bağımlılıklar (curl, openssl, sqlite3, spdlog)
+      + pinlenmiş registry baseline; `FLOWGET_VCPKG_ROOT` ile toolchain çözümü, CI vcpkg adımları.
+- [x] **M1/S1a'da tamamlandı:** `scripts/check_dependencies.py` (GPL/AGPL denylist, ADR-0004) + CI `policy` job'u.
 
 **DoD:** Temiz makinede `cmake --preset windows-x64 && cmake --build --preset windows-x64 && ctest` → yeşil; CI'da aynı adımlar yeşil.
 
@@ -51,6 +50,25 @@ ASCII olmayan dizin yolunda GTest keşfi kırıldı → `add_test`'e geçildi (`
 
 **Hedef:** `flowget-cli get <URL> -o out.bin --connections 8` ile 100 MB dosyayı doğru, hızlı, kesintiden
 sonra devam ettirilebilir şekilde indirmek. UI yok.
+
+### Dilim planı ve ilerleme
+
+| Dilim | Kapsam | Durum |
+|---|---|---|
+| S1a | vcpkg manifesti (curl, openssl, sqlite3, spdlog) + toolchain/CI + GPL denylist betiği | **TAMAMLANDI** |
+| S1b | `HttpClient` + tek bağlantılı indirme + yerel test HTTP sunucusu | sırada |
+| S2 | Probe (HEAD / `Range: bytes=0-0`, 206/200/416, metadata) | |
+| S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | |
+| S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | |
+| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | |
+| S6 | `RetryPolicy` + `RateLimiter` | |
+| S7 | `DynamicSplitter` + benchmark tablosu | |
+| S8 | `HashVerifier` + hata modeli + CLI bayrakları + RSS ölçümü | |
+
+**S1a kanıtı (2026-11-14):** vcpkg `2026-10-29` / baseline `4702e38`; `curl 8.23.0 (schannel+nghttp2)`,
+`OpenSSL 3.6.5`, `SQLite 3.54.1`, `spdlog 1.17.0` `flowget-cli --version` çıktısında;
+`ctest` 1/1 passed; `check_dependencies.py` temiz manifestte `exit=0`, GPL fixture'da `exit=1`
+(`libx264`, `some-agpl-package` yakalandı).
 
 ### Tasarım
 - [ ] `IStorage` arayüzü + `Win32Storage` (preallocate: `SetFileInformationByHandle(FileAllocationInfo)`),

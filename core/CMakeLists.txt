@@ -1,4 +1,4 @@
-add_library(flowget_core STATIC src/version.cpp src/api.cpp)
+add_library(flowget_core STATIC src/version.cpp src/api.cpp src/build_info.cpp)
 add_library(FlowGet::core ALIAS flowget_core)
 
 target_include_directories(
@@ -14,5 +14,23 @@ configure_file(
     "${PROJECT_SOURCE_DIR}/cmake/version.h.in"
     "${PROJECT_BINARY_DIR}/generated/include/flowget/version_generated.h"
     @ONLY)
+
+# Third-party dependencies come from vcpkg manifest mode (vcpkg.json). The CURL backend differs per
+# platform on purpose: schannel on Windows uses the system trust store, OpenSSL elsewhere. OpenSSL is
+# linked directly for EVP (SHA-256/MD5 verification), SQLite for the queue database (M2), spdlog for
+# logging (ADR-0001, ADR-0003).
+find_package(CURL REQUIRED)
+find_package(OpenSSL REQUIRED)
+find_package(SQLite3 REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
+
+# PRIVATE is enough: CMake propagates these to static-library consumers as $<LINK_ONLY:...>, so the
+# CLI and tests link them without including third-party headers in the public interface.
+target_link_libraries(
+    flowget_core
+    PRIVATE CURL::libcurl
+            OpenSSL::Crypto
+            SQLite3::SQLite3
+            spdlog::spdlog)
 
 flowget_set_warnings(flowget_core)

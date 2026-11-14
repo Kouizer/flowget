@@ -26,3 +26,37 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
 - Tekrarını önleyen kontrol: Build, ASCII olmayan bir dizinde de çalıştırılmalı (yerel geliştirme
   yolu); CI tek başına bunu yakalamaz.
 
+### 2026-11-14 — Visual Studio'nun getirdiği `cmake.exe`, `VCPKG_ROOT`'ı sessizce eziyor
+- Belirti: Kabukta `VCPKG_ROOT=C:\Users\Enes\vcpkg` olmasına rağmen configure, VS'in gömülü
+  `C:\Program Files\Microsoft Visual Studio\18\Community\VC\vcpkg` toolchain'ini kullandı;
+  `CMakeCache.txt` içinde `Z_VCPKG_ROOT_DIR` VS yolunu gösterdi.
+- Kök neden: VS ile gelen `cmake.exe`, kendi süreç ortamında `VCPKG_ROOT` değişkenini VS'in vcpkg
+  kopyasına yazıyor. `cmd` içinde `echo %VCPKG_ROOT%` doğru değeri gösterdiği için sorun ilk bakışta
+  görünmüyor; fark yalnızca `cmake -E environment` çıktısında ortaya çıkıyor.
+- Düzeltme: `CMakeLists.txt` önce `FLOWGET_VCPKG_ROOT`, sonra `VCPKG_ROOT` kullanıyor; yerelde
+  `FLOWGET_VCPKG_ROOT=C:\Users\Enes\vcpkg` ayarlandı, README'de not edildi.
+- Tekrarını önleyen kontrol: Configure logunda `vcpkg install` satırları ve `CMakeCache.txt` içindeki
+  `Z_VCPKG_ROOT_DIR` beklenen kökü göstermeli; şüphede `cmake -E environment | findstr VCPKG_ROOT`.
+
+### 2026-11-14 — ASCII olmayan dizinde vcpkg port derlemesi (curl) kırılıyor
+- Belirti: `curl` portu configure aşamasında `Imported target "CURL::nghttp2" includes non-existent
+  path "C:/Users/Enes/Documents/Varsay�lan"` ile `BUILD_FAILED` verdi; aynı dizinde `nghttp2` ve
+  `zlib` sorunsuz derlendiği için ilk bakışta "curl portu bozuk" görünüyordu.
+- Kök neden: vcpkg, ürettiği `*Config.cmake` dosyalarına mutlak kurulum yollarını yazıyor; Windows
+  bu dosyaları ANSI kod sayfasında okuduğu için ASCII olmayan karakter ("ı") yolu kesiyor. M0'daki
+  GTest keşfi hatasıyla aynı sınıf: **araç zincirinin ürettiği dosyalara giden yol ASCII olmalı.**
+- Düzeltme: Kaynak yolu ASCII değilse `VCPKG_INSTALLED_DIR` otomatik olarak
+  `%LOCALAPPDATA%\FlowGet\vcpkg-installed` altına taşınıyor (vcpkg'ın ürettiği tüm yollar ASCII kalır).
+- Tekrarını önleyen kontrol: Temiz `build/` ile configure + build, ASCII olmayan bir dizinde
+  çalıştırılmalı; CI (ASCII yol) bu hatayı yakalamaz.
+
+### 2026-11-14 — Manifest okuyucu: BOM ve pubspec girinti derinliği
+- Belirti: `check_dependencies.py`, PowerShell'in yazdığı `vcpkg.json`'ı `Unexpected UTF-8 BOM` ile
+  reddetti; ayrıca pubspec'te 3 bağımlılık varken 4 saydı.
+- Kök neden: (a) dosya `utf-8` ile okunuyordu, Windows editörleri/`Set-Content` BOM ekliyor;
+  (b) girinti kontrolü `indent < 2` idi, `sdk: flutter` gibi alt alanlar da paket adı sayıldı.
+- Düzeltme: okuma `utf-8-sig`; bağımlılık satırı yalnızca tam olarak 2 boşluk girintide kabul ediliyor.
+- Tekrarını önleyen kontrol: Betik iki manifestli bir fixture üzerinde çalıştırılıyor (GPL örneği
+  `exit=1`, temiz örnek `exit=0`) — S1a kanıtı `tasks/todo.md`'de.
+
+

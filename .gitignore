@@ -22,6 +22,10 @@ compile_commands.json
 *.pch
 /clang-tidy-*
 
+# Dependency caches
+/.vcpkg-cache/
+vcpkg_installed/
+
 # Test / runtime artifacts
 /tests/tmp/
 *.log

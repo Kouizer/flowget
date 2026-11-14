@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "flowget",
+  "version": "0.1.0",
+  "description": "Fast segmented download manager for Windows and Android",
+  "homepage": "https://github.com/flowget/flowget",
+  "license": "MIT",
+  "builtin-baseline": "4702e381dbbd9b54d3f7e1eb565cd8981c1814cd",
+  "dependencies": [
+    "openssl",
+    "sqlite3",
+    "spdlog",
+    {
+      "name": "curl",
+      "default-features": true,
+      "features": [
+        "http2"
+      ]
+    }
+  ]
+}

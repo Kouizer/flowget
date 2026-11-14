@@ -43,6 +43,32 @@ Prerequisites:
 - Visual Studio 2022/2026 with the **Desktop development with C++** workload
 - CMake ≥ 3.25 and Ninja on `PATH` (both ship with Visual Studio)
 - A *Developer PowerShell* (so the MSVC environment is initialized)
+- [vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` pointing at it. Dependencies are
+  declared in `vcpkg.json` and installed automatically on the first configure
+  (`x64-windows-static-md`, so no DLLs have to be deployed next to the binaries):
+
+  ```powershell
+  git clone https://github.com/microsoft/vcpkg "$env:USERPROFILE\vcpkg"
+  & "$env:USERPROFILE\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+  setx VCPKG_ROOT "$env:USERPROFILE\vcpkg"   # once, then reopen the shell
+  ```
+
+  <details>
+  <summary>Visual Studio's bundled CMake rewrites <code>VCPKG_ROOT</code></summary>
+
+  The `cmake.exe` shipped with Visual Studio sets `VCPKG_ROOT` to VS's own vcpkg copy in the
+  environment its configure step sees (`cmake -E environment` shows it, even when the shell reports
+  your path). Set `FLOWGET_VCPKG_ROOT` instead — the build prefers it over `VCPKG_ROOT`:
+
+  ```powershell
+  setx FLOWGET_VCPKG_ROOT "$env:USERPROFILE\vcpkg"
+  ```
+
+  </details>
+
+  A checkout below a non-ASCII path also works: vcpkg writes absolute paths into its generated
+  `*Config.cmake` files, which Windows parses in the ANSI code page, so CMake relocates the vcpkg
+  install tree to `%LOCALAPPDATA%\FlowGet\vcpkg-installed` in that case.
 
 ```powershell
 cmake --preset windows-x64
@@ -59,6 +85,14 @@ pre-commit run --all-files
 ```
 
 ## Build (Linux)
+
+`VCPKG_ROOT` must be set here too (same manifest, `x64-linux` triplet):
+
+```bash
+git clone https://github.com/microsoft/vcpkg "$HOME/vcpkg"
+"$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+export VCPKG_ROOT="$HOME/vcpkg"
+```
 
 ```bash
 cmake --preset linux-x64

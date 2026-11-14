@@ -18,7 +18,7 @@ set(INSTALL_GTEST
 
 FetchContent_MakeAvailable(googletest)
 
-add_executable(flowget_unit_tests unit/version_test.cpp)
+add_executable(flowget_unit_tests unit/version_test.cpp unit/build_info_test.cpp)
 target_link_libraries(flowget_unit_tests PRIVATE FlowGet::core GTest::gtest_main)
 
 flowget_set_warnings(flowget_unit_tests)
