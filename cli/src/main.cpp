@@ -142,17 +142,14 @@ int main(int argc, char** argv) {
         return run_get(argc, argv);
     }
 
-    for (int index = 1; index < argc; ++index) {
-        const std::string_view arg = argv[index];
-        const int result = handle_flag(arg);
-        if (result >= 0) {
-            return result;
-        }
-        print_error("unknown argument " + std::string{arg});
-        print_usage(stderr);
-        return 2;
+    // Flags are mutually exclusive and terminate the process, so only argv[1] can ever be handled:
+    // a loop here returns on its first iteration, which leaves its increment (and anything after
+    // it) unreachable (MSVC C4702).
+    const int result = handle_flag(command);
+    if (result >= 0) {
+        return result;
     }
-
+    print_error("unknown argument " + std::string{command});
     print_usage(stderr);
     return 2;
 }

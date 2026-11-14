@@ -34,6 +34,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
@@ -43,6 +44,17 @@ namespace {
 #ifdef _WIN32
 using SocketHandle = SOCKET;
 constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
+
+// Winsock spells every length/return value as `int`: send()/recv() return int, buffer sizes and
+// sockaddr lengths are int. Keeping the platform types in one place stops the POSIX `ssize_t`
+// results from being narrowed into `int` (which truncates and trips -Wconversion).
+using SocketLength = int;
+using SocketIoSize = int;
+using IoResult = int;
+
+int send_flags() {
+    return 0; // MSG_NOSIGNAL does not exist on Windows; there is no SIGPIPE either.
+}
 
 int close_socket(SocketHandle socket) {
     return ::closesocket(socket);
@@ -54,6 +66,19 @@ void shutdown_socket(SocketHandle socket) {
 #else
 using SocketHandle = int;
 constexpr SocketHandle kInvalidSocket = -1;
+
+// POSIX: send()/recv() take a size_t length and return ssize_t (bytes, or -1); sockaddr lengths
+// use socklen_t.
+using SocketLength = socklen_t;
+using SocketIoSize = std::size_t;
+using IoResult = ssize_t;
+
+int send_flags() {
+    // A peer may close the connection between two body pieces (dropped/cancelled transfers).
+    // Without MSG_NOSIGNAL the resulting SIGPIPE would kill the whole test binary instead of
+    // failing send().
+    return MSG_NOSIGNAL;
+}
 
 int close_socket(SocketHandle socket) {
     return ::close(socket);
@@ -119,8 +144,8 @@ bool send_all(SocketHandle socket, const char* data, std::size_t size) {
     std::size_t sent = 0;
     while (sent < size) {
         const std::size_t remaining = size - sent;
-        const int piece = static_cast<int>(std::min<std::size_t>(remaining, 64 * 1024));
-        const int written = ::send(socket, data + sent, piece, 0);
+        const auto piece = static_cast<SocketIoSize>(std::min<std::size_t>(remaining, 64 * 1024));
+        const IoResult written = ::send(socket, data + sent, piece, send_flags());
         if (written <= 0) {
             return false;
         }
@@ -159,7 +184,8 @@ bool read_request(SocketHandle socket, Request& request) {
         if (buffer.size() > 64 * 1024) {
             return false;
         }
-        const int received = ::recv(socket, chunk, static_cast<int>(sizeof(chunk)), 0);
+        const IoResult received =
+            ::recv(socket, chunk, static_cast<SocketIoSize>(sizeof(chunk)), 0);
         if (received <= 0) {
             return false;
         }
@@ -283,11 +309,7 @@ struct HttpTestServer::Impl {
             address.sin_family = AF_INET;
             address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
-#ifdef _WIN32
-            int address_length = static_cast<int>(sizeof(address));
-#else
-            socklen_t address_length = sizeof(address);
-#endif
+            SocketLength address_length = static_cast<SocketLength>(sizeof(address));
             const SocketHandle client =
                 ::accept(listener, reinterpret_cast<sockaddr*>(&address), &address_length);
             if (client == kInvalidSocket) {
@@ -377,7 +399,9 @@ HttpTestServer::HttpTestServer(Handler handler)
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     address.sin_port = 0;
 
-    if (::bind(impl.listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+    if (::bind(impl.listener,
+               reinterpret_cast<sockaddr*>(&address),
+               static_cast<SocketLength>(sizeof(address))) != 0) {
         static_cast<void>(close_socket(impl.listener));
         throw std::runtime_error("test server: bind() failed");
     }
@@ -386,11 +410,7 @@ HttpTestServer::HttpTestServer(Handler handler)
         throw std::runtime_error("test server: listen() failed");
     }
 
-#ifdef _WIN32
-    int length = static_cast<int>(sizeof(address));
-#else
-    socklen_t length = sizeof(address);
-#endif
+    SocketLength length = static_cast<SocketLength>(sizeof(address));
     if (::getsockname(impl.listener, reinterpret_cast<sockaddr*>(&address), &length) != 0) {
         static_cast<void>(close_socket(impl.listener));
         throw std::runtime_error("test server: getsockname() failed");

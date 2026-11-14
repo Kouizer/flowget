@@ -72,5 +72,38 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
 - Tekrarını önleyen kontrol: `windows.h` kullanan her .cpp `NOMINMAX` ile başlar; ayrıca MSVC build'i
   (`-W4 /WX`) bu sınıfı CI'da zaten yakalıyor.
 
+### 2026-11-14 — CLI bayrak döngüsünün gövdesi her yolda `return` ediyordu (MSVC C4702)
+- Belirti: Windows CI (MSVC, `/W4 /WX`) `cli/src/main.cpp:145` için `error C2220` + `warning C4702:
+  unreachable code` verdi; Clang bu uyarıyı üretmediği için Linux işi yeşil kaldı.
+- Kök neden: `for (int index = 1; index < argc; ++index)` döngüsünün gövdesi **her** yolda
+  dönüyordu (`handle_flag` sonucu >= 0 ise `return result`, değilse hata yazıp `return 2`). Bu yüzden
+  döngünün artış ifadesi (`++index`) ve döngüden sonraki `print_usage/return 2` hiç yürütülemiyordu;
+  sözde döngü aslında yalnızca `argv[1]`'i işliyordu. MSVC erişilemeyen artış satırını işaretledi.
+- Düzeltme: döngü kaldırıldı; `argv[1]` doğrudan `handle_flag(command)`'a verildi ve davranış
+  korundu (bayraklar birbirini dışlar ve süreci sonlandırır). Uyarı susturulmadı, erişilemeyen kod
+  silindi.
+- Tekrarını önleyen kontrol: MSVC `/W4 /WX` CI build'i; gövdesi koşulsuz `return` eden döngü
+  yazılmaz. İleride birden çok argüman işlenecekse gövdede gerçek bir `continue`/tamamlama yolu
+  bırakılmalı.
+
+### 2026-11-14 — Test HTTP sunucusu soket tiplerini `int` varsayıyordu; POSIX'te SIGPIPE
+- Belirti: Linux CI (Clang, `-Wconversion -Wsign-conversion -Werror`) `tests/support/http_test_server.cpp`
+  içinde `send()` sonucunun `const int`'e atanmasını (+ `int` → `size_t` işaret dönüşümünü) ve
+  `recv()` sonucunun `const int`'e atanmasını hata verdi. Windows'ta aynı satırlar temiz derlendi.
+- Kök neden: Winsock `send`/`recv` **int** döndürür ve uzunluğu **int** alır; POSIX `ssize_t`
+  döndürür ve **size_t** uzunluk alır. Kod tek bir `int` varsayımıyla yazılmıştı: Linux'ta dönüş
+  değeri daralıyor (ssize_t → int, sessiz kesme riski) ve uzunluk argümanı işaret dönüşümüne
+  uğruyordu. Aynı sınıftaki ikinci sorun: POSIX `send()`, peer bağlantıyı kapatmışsa SIGPIPE üretir;
+  iptal/düşen bağlantı testlerinde bu, tek bir `send` hatası yerine tüm test ikilisini öldürebilirdi.
+- Düzeltme: Platforma göre tek yerde tanımlı `SocketLength` / `SocketIoSize` / `IoResult`
+  typedef'leri (Windows: `int`/`int`/`int`; POSIX: `socklen_t`/`std::size_t`/`ssize_t`). `send`/`recv`
+  uzunluk ve dönüş değerleri bu tiplerle, açık cast'lerle kullanılıyor; `accept`/`getsockname`/`bind`
+  uzunlukları `SocketLength`; POSIX'te `send` bayrakları `MSG_NOSIGNAL`, Windows'ta `0` (SIGPIPE yok).
+  `close`/`closesocket` farkı zaten `close_socket` sarmalayıcısında.
+- Tekrarını önleyen kontrol: Linux CI'da Clang `-Wconversion -Wsign-conversion -Werror` build'i ve
+  ASan/UBSan testleri. Soket sarmalayıcıları dışında çıplak `send`/`recv`/`close` çağrısı yazılmaz;
+  dönüş tipleri platform typedef'lerinden alınır.
+
+
 
 
