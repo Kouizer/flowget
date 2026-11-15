@@ -62,7 +62,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S1a | vcpkg manifesti (curl, openssl, sqlite3, spdlog) + toolchain/CI + GPL denylist betiği | **TAMAMLANDI** |
 | S1b | `HttpClient` + tek bağlantılı indirme + yerel test HTTP sunucusu | **TAMAMLANDI** |
 | S2 | Probe (HEAD / `Range: bytes=0-0`, 206/200/416, metadata) | **TAMAMLANDI** |
-| S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | PLAN — onay bekliyor |
+| S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** (yerel; Linux CI push sonrası) |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | |
 | S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | |
 | S6 | `RetryPolicy` + `RateLimiter` | |
@@ -144,7 +144,7 @@ girdisi.
 4. `416` taşıma katmanında `http_status` olarak görünür (4xx genel kuralı); probe bu tek durumu
    anlamlı sonuç sayar — S5'te sidecar doğrulaması da aynı ayrımı kullanacak.
 
-### S3 — IStorage + preallocate + pwrite — **UYGULANIYOR**
+### S3 — IStorage + preallocate + pwrite — **TAMAMLANDI** (yerel; Linux CI push sonrası doğrulanacak)
 
 **Hedef:** S4'ün ihtiyacı olan dosya katmanı: aynı dosyaya 8 işçi farklı offset'lerden yazar; yol UTF-8
 (Windows'ta UTF-16'ya çevrilir); ön tahsis isteğe bağlıdır ve başarısızlığı indirmeyi sessizce bozmaz.
@@ -155,15 +155,15 @@ girdisi.
 3. `SingleStreamDownloader` bu dilimde değişmez; taşıma işi **S4'ün ilk maddesi**.
 
 **Dosyalar**
-- [ ] `core/include/flowget/storage.h` — `IStorage`, `StorageError`, `StorageResult`, `OpenMode`,
+- [x] `core/include/flowget/storage.h` — `IStorage`, `StorageError`, `StorageResult`, `OpenMode`,
       `FileOffset`, `make_platform_storage()`
-- [ ] `core/include/flowget/storage_detail.h` — yalnız test seam'i: kısmi yazma/EINTR döngüsü
+- [x] `core/include/flowget/storage_detail.h` — yalnız test seam'i: kısmi yazma/EINTR döngüsü
       (`flowget::detail::io_all`); C ABI'nin parçası değil
-- [ ] `core/src/storage.cpp` — `storage_error_name`, `storage_error_is_fatal`, platform seçimi
-- [ ] `core/src/storage_win32.cpp`, `core/src/storage_posix.cpp` — tek arayüz, iki uygulama
-- [ ] `core/CMakeLists.txt` — yeni kaynaklar; POSIX'te `_FILE_OFFSET_BITS=64` **hedef düzeyinde** +
+- [x] `core/src/storage.cpp` — `storage_error_name`, `storage_error_is_fatal`, platform seçimi
+- [x] `core/src/storage_win32.cpp`, `core/src/storage_posix.cpp` — tek arayüz, iki uygulama
+- [x] `core/CMakeLists.txt` — yeni kaynaklar; POSIX'te `_FILE_OFFSET_BITS=64` **hedef düzeyinde** +
       `static_assert(sizeof(off_t) >= sizeof(std::int64_t))`
-- [ ] `tests/unit/storage_test.cpp`, `tests/integration/storage_io_test.cpp` + `tests/CMakeLists.txt`
+- [x] `tests/unit/storage_test.cpp`, `tests/integration/storage_io_test.cpp` + `tests/CMakeLists.txt`
 
 **Arayüz**
 - `open(const std::string& utf8_path, OpenMode)`; `OpenMode = { read_only, read_write, read_write_truncate }`
@@ -248,11 +248,34 @@ girdisi.
 **DoD:** yukarıdaki testler yeşil, `-Werror` temiz, clang-format temiz, ASCII olmayan yolda round-trip
 kanıtlı, Linux CI yeşili (push sonrası).
 
+**Kanıt (yerel, MSVC 19.52 / CMake 4.3.1, 2026-11-15):** commit `f7170b5`. `/W4 /WX` build temiz
+(uyarı yok); `ctest` 2/2: **39 birim + 30 entegrasyon = 69 test** (S3 öncesi 42).
+- 8 iş parçacığı aynı dosyanın ayrık aralıklarına eşzamanlı `write_at` → tüm dosya ve dilim dilim
+  içerik birebir (`EightThreadsWriteDisjointRangesConcurrently`).
+- ASCII olmayan dizin+ad (`İndirilenler/İndirilen_çğış.bin`, ayrıca `şğü-中文-🚀.bin`) ile
+  open/write/flush/close/reopen/read round-trip; dosya sistemi aynı adı görüyor.
+- Preallocate 64 KiB / 1 MiB / 5 MiB sonrası `size()` doğru, önceden yazılmış veri korunuyor, küçültme
+  yok; `read_write_truncate` 5 MiB dosyayı 0'a indirir; `read_only` yazmayı reddeder; EOF ötesi okuma
+  hata döner; `close` idempotent; geçersiz argümanlar (`-1` offset, null buffer, offset+size taşması)
+  `invalid_argument`.
+- `io_all` kısmi yazma / iki `EINTR` / 0 bayt / 100+ `EINTR` senaryoları sahte syscall ile; 0 bayt
+  tekrar denemez, 100 tekrardan sonra hata, sınırda (100) başarı.
+- `pre_commit run --all-files` temiz.
+
+**S3 sırasında bulunan tasarım hatası:** `reopen()` ilk açılış modunu (truncate dahil) yeniden
+uyguluyordu ve yarım kalmış dosyayı siliyordu. Düzeltme: truncate yalnız oluşturma anında geçerli,
+`reopen()` her zaman `read_write`/`read_only` ile açar; `ReopenAfterTruncateModeKeepsData` testi bunu
+kilitliyor (`tasks/lessons.md`).
+
+**Yerelde doğrulanamayan:** Linux dalı (Clang `-Wconversion -Wsign-conversion -Werror`, ASan/UBSan) —
+`PosixStorage` bu makinede hiç derlenmedi; push sonrası CI doğrulayacak. `_FILE_OFFSET_BITS=64` ve
+`off_t` `static_assert`'leri bilinçli olarak build zamanında yakalar.
+
 ### Tasarım
 - [ ] **S4'ün ilk maddesi:** `SingleStreamDownloader`'ı `IStorage`'a taşı, ASCII olmayan hedef yolla test
       et (bugün `ofstream` + `path.string()` ANSI kod sayfası kullanır; `tasks/todo.md` S3 kararı).
-- [ ] `IStorage` arayüzü + `Win32Storage` (preallocate: `SetFileInformationByHandle(FileAllocationInfo)`),
-      `PosixStorage` (`posix_fallocate`), `pwrite`/`pread`
+- [x] `IStorage` arayüzü + `Win32Storage` (preallocate: `SetFileInformationByHandle(FileAllocationInfo)`),
+      `PosixStorage` (`posix_fallocate`), `pwrite`/`pread` — **S3'te tamamlandı**
 - [x] `HttpClient` — **S1b'de tamamlandı:** curl multi üzerinde senkron `get()`, tek uçuşta tek transfer;
       iptal `CURLOPT_XFERINFOFUNCTION` ile 50 ms'de bir yoklanıyor (ölçülen sınır ~50 ms). Ayrı engine
       thread + `curl_multi_wakeup` S4'te (aynı anda çok transfer) devreye alınacak; bugün gereksiz.

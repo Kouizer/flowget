@@ -217,3 +217,25 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
 - Tekrarını önleyen kontrol: `ninja --version` çıktısı her koşuda logda; configure'daki
   "CMAKE_MAKE_PROGRAM" metni bundan sonra doğrudan üreteç/ortam eksiğine işaret eder, vcpkg
   hatasıyla karıştırılmaz.
+
+### 2026-11-15 — `reopen()` yarım kalmış dosyayı siliyordu (truncate modu yeniden uygulanıyordu)
+- Belirti: `StorageIoTest.NonAsciiPathRoundTrip` 4096 bayt yazıp `close()` + `reopen()` sonrası
+  `read_at` ile `read` hatası verdi; dosya beklenen boyutta değildi.
+- Kök neden: `open()` çağrıldığı modu (`read_write_truncate` dahil) `mode_` alanına yazıyordu ve
+  `reopen()` aynı modu yeniden uyguluyordu. Truncate bir **oluşturma** kararıdır, yeniden açma kararı
+  değil; S5'te "çökme sonrası dosyayı yeniden doğrula" adımı veriyi silecekti. Hata sessiz: API
+  "ok" dönüyor, yalnız dosyanın içeriği kayboluyor.
+- Düzeltme: `open()` başarılı olduktan sonra `mode_ = (mode == read_write_truncate) ? read_write :
+  mode`; `reopen()` her zaman veriyi koruyan modla açar. `storage.h` yorumunda sözleşme yazılı.
+- Tekrarını önleyen kontrol: `ReopenAfterTruncateModeKeepsData` testi; `NonAsciiPathRoundTrip` de
+  yazma → close → reopen → okuma zincirini doğruluyor.
+
+### 2026-11-15 — PowerShell `Set-Content -NoNewline` dosyayı tek satıra indirdi
+- Belirti: `(Get-Content f) -replace ... | Set-Content -NoNewline f` sonrası dosya 0 satır sonu, 0 CR
+  içeriyordu; tüm içerik tek satıra yapışmıştı.
+- Kök neden: `-NoNewline` verildiğinde `Set-Content` dizi elemanlarını **ayırıcısız** birleştirir
+  (satır sonlarını da eklemez). `Get-Content` satır sonlarını zaten atmıştı.
+- Düzeltme: dosya `write` aracıyla bütünüyle yeniden yazıldı; satır bazlı toplu değişiklik yapılacaksa
+  `edit`/`write` aracı ya da `Set-Content` **`-NoNewline` olmadan** kullanılmalı.
+- Tekrarını önleyen kontrol: toplu değişiklikten sonra `git diff --stat` + dosyada CR/LF sayımı;
+  `pre-commit` (`end-of-file-fixer`) tek satıra inmiş dosyayı hemen yakalar.
