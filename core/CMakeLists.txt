@@ -5,6 +5,9 @@ add_library(
     src/build_info.cpp
     src/http_client.cpp
     src/curl_transport.cpp
+    src/http_range.cpp
+    src/http_filename.cpp
+    src/probe.cpp
     src/single_stream_download.cpp)
 add_library(FlowGet::core ALIAS flowget_core)
 
@@ -12,6 +15,14 @@ target_include_directories(
     flowget_core
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
            $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/generated/include>)
+
+# curl.h pulls in windows.h, which defines min/max as macros and breaks std::min and
+# std::numeric_limits<T>::max() (seen in curl_transport.cpp). Defining NOMINMAX once for the target is
+# the only reliable guard: a per-file #define is forgotten as soon as a new file includes curl.h.
+# PUBLIC so consumers that also touch sockets/windows.h inherit it. See tasks/lessons.md.
+if(WIN32)
+    target_compile_definitions(flowget_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 
 # The public C ABI header lives next to the C++ headers so that the CLI, tests, and later the
 # dart:ffi bindings consume exactly the same declaration.

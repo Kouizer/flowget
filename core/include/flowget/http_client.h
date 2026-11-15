@@ -27,12 +27,24 @@ enum class HttpError {
 
 const char* http_error_name(HttpError error);
 
+enum class HttpMethod {
+    get = 0,
+    // HEAD: metadata only. Some servers answer 403/405 to HEAD (signed URLs that only allow GET) or
+    // never answer at all, so callers must be able to fall back to GET without treating that as a
+    // failure.
+    head,
+};
+
 struct HttpRequest {
     std::string url;
+    HttpMethod method = HttpMethod::get;
     std::string user_agent = "FlowGet/0.1.0";
     // Extra request headers, e.g. "referer", "cookie", "authorization".
     std::map<std::string, std::string> headers;
     bool follow_redirects = true;
+    // Hard limit for the whole transfer, redirects included. 0 keeps the transport defaults
+    // (connect timeout + low-speed abort). Used by probing, where a stalled server must not block.
+    std::int64_t timeout_ms = 0;
 };
 
 struct HttpResponse {
@@ -43,6 +55,9 @@ struct HttpResponse {
     std::string etag;
     std::string last_modified;
     std::string accept_ranges;
+    // "Content-Range" of a 206/416 response, e.g. "bytes 0-0/12345" or "bytes */0"; empty when the
+    // header was absent. Parsing lives in http_range.h.
+    std::string content_range;
     std::string content_type;
     std::string content_disposition;
 };

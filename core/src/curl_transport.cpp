@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -196,6 +198,16 @@ public:
         char error_buffer[CURL_ERROR_SIZE] = {};
         CURL* handle = easy.get();
         curl_easy_setopt(handle, CURLOPT_URL, request.url.c_str());
+        if (request.method == HttpMethod::head) {
+            curl_easy_setopt(handle, CURLOPT_NOBODY, 1L);
+        }
+        if (request.timeout_ms > 0) {
+            constexpr std::int64_t kMaxTimeout =
+                static_cast<std::int64_t>(std::numeric_limits<long>::max());
+            const auto timeout_ms =
+                static_cast<long>(std::min<std::int64_t>(request.timeout_ms, kMaxTimeout));
+            curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, timeout_ms);
+        }
         curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, request.follow_redirects ? 1L : 0L);
         curl_easy_setopt(handle, CURLOPT_MAXREDIRS, 10L);
         // Byte offsets must refer to the payload, not to a compressed stream (ADR-0001).
@@ -270,6 +282,7 @@ public:
         result.response.etag = header_value(context.headers, "etag");
         result.response.last_modified = header_value(context.headers, "last-modified");
         result.response.accept_ranges = header_value(context.headers, "accept-ranges");
+        result.response.content_range = header_value(context.headers, "content-range");
         result.response.content_type = header_value(context.headers, "content-type");
         result.response.content_disposition = header_value(context.headers, "content-disposition");
 

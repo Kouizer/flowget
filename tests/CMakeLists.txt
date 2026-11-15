@@ -20,7 +20,11 @@ FetchContent_MakeAvailable(googletest)
 
 find_package(Threads REQUIRED)
 
-add_executable(flowget_unit_tests unit/version_test.cpp unit/build_info_test.cpp)
+add_executable(flowget_unit_tests
+               unit/version_test.cpp
+               unit/build_info_test.cpp
+               unit/probe_parsing_test.cpp
+)
 target_link_libraries(flowget_unit_tests PRIVATE FlowGet::core GTest::gtest_main)
 
 flowget_set_warnings(flowget_unit_tests)
@@ -28,7 +32,9 @@ flowget_set_warnings(flowget_unit_tests)
 # Integration tests run against the in-process test HTTP server (tests/support), so they need no
 # network access and no external process. The port is chosen by the OS on loopback.
 add_executable(flowget_integration_tests
-               integration/single_stream_download_test.cpp support/http_test_server.cpp)
+               integration/single_stream_download_test.cpp
+               integration/probe_test.cpp
+               support/http_test_server.cpp)
 target_include_directories(flowget_integration_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(flowget_integration_tests PRIVATE FlowGet::core GTest::gtest_main
                                                       Threads::Threads)

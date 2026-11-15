@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -175,6 +176,76 @@ std::string reason_phrase(int status) {
     default:
         return "Status";
     }
+}
+
+bool parse_decimal(std::string_view text, std::uint64_t& out) {
+    if (text.empty()) {
+        return false;
+    }
+    std::uint64_t value = 0;
+    for (const char character : text) {
+        if (character < '0' || character > '9') {
+            return false;
+        }
+        const auto digit = static_cast<std::uint64_t>(character - '0');
+        if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U) {
+            return false;
+        }
+        value = value * 10U + digit;
+    }
+    out = value;
+    return true;
+}
+
+// Implements the subset of RFC 9110 range handling the probe uses: a single `bytes=a-b` or
+// `bytes=a-` range. Anything else (suffix ranges, multiple ranges, other units) is ignored and the
+// full body is served, mirroring how a minimal server behaves.
+void apply_range(const Request& request, Response& response) {
+    const auto iterator = request.headers.find("range");
+    if (iterator == request.headers.end()) {
+        return;
+    }
+    constexpr std::string_view kPrefix = "bytes=";
+    const std::string_view value = iterator->second;
+    if (value.rfind(kPrefix, 0) != 0) {
+        return;
+    }
+    const std::string_view specification = value.substr(kPrefix.size());
+    if (specification.find(',') != std::string_view::npos) {
+        return;
+    }
+    const std::size_t dash = specification.find('-');
+    if (dash == std::string_view::npos) {
+        return;
+    }
+
+    std::uint64_t first = 0;
+    if (!parse_decimal(trim(specification.substr(0, dash)), first)) {
+        return; // suffix ranges are deliberately unsupported by the fixture
+    }
+
+    const std::uint64_t size = static_cast<std::uint64_t>(response.body.size());
+    if (first >= size) {
+        response.status = 416;
+        response.headers["Content-Range"] = "bytes */" + std::to_string(size);
+        response.body.clear();
+        return;
+    }
+
+    const std::string_view last_text = trim(specification.substr(dash + 1));
+    std::uint64_t last = size - 1;
+    if (!last_text.empty()) {
+        if (!parse_decimal(last_text, last)) {
+            return;
+        }
+        last = std::min(last, size - 1);
+    }
+
+    response.status = 206;
+    response.headers["Content-Range"] =
+        "bytes " + std::to_string(first) + "-" + std::to_string(last) + "/" + std::to_string(size);
+    response.body = response.body.substr(static_cast<std::size_t>(first),
+                                         static_cast<std::size_t>(last - first + 1));
 }
 
 bool read_request(SocketHandle socket, Request& request) {
@@ -337,9 +408,19 @@ struct HttpTestServer::Impl {
                 local_handler = handler;
             }
 
-            const Response response = local_handler(request);
-            if (write_head(client, response)) {
-                static_cast<void>(write_body(client, response));
+            Response served = local_handler(request);
+            if (served.stall) {
+                // Read until the peer gives up: no status line, no headers, no body. Server
+                // teardown shuts the socket down, so this returns during destruction as well.
+                char byte = 0;
+                static_cast<void>(::recv(client, &byte, static_cast<SocketIoSize>(1), 0));
+            } else {
+                if (served.honor_range) {
+                    apply_range(request, served);
+                }
+                if (write_head(client, served) && request.method != "HEAD") {
+                    static_cast<void>(write_body(client, served));
+                }
             }
         }
 
