@@ -114,3 +114,57 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
   diğer izlenen dosyalar da tarandı (başka fazla boş satır veya satır sonu boşluğu yok).
 - Tekrarını önleyen kontrol: commit'ten önce `pre-commit run --all-files` çalıştır; pre-commit yoksa
   her dosyanın sonunda yalnızca bir yeni satır kaldığını doğrula.
+
+### 2026-11-14 — `curl.h` üzerinden gelen `windows.h`, `numeric_limits<long>::max()`'i bozdu
+- Belirti: MSVC `/W4 /WX` build'i `curl_transport.cpp` içinde `C4003: 'max' ... yeterli bağımsız
+  değişken yok`, `C2589: '(': '::' sağ tarafında geçersiz belirteç` ve `C2737: 'kMaxTimeout'
+  başlatılması gerekiyor` verdi; aynı dosya Linux'ta sorunsuz derlenir.
+- Kök neden: `curl.h` Windows'ta `windows.h`'ı çekiyor ve `min`/`max` **fonksiyon benzeri makro**
+  oluyor; `std::numeric_limits<long>::max()` metni `max()` (sıfır argüman) olarak genişleyip
+  patlıyor. Kural (`windows.h` kullanan her .cpp `NOMINMAX` ile başlar) `tasks/lessons.md`'de vardı
+  ama yeni dosya yazılırken hatırlanması gereken bir kuraldı — yani koruma geliştiricinin belleğine
+  bağlıydı.
+- Düzeltme: `core/CMakeLists.txt` içinde Windows'ta `NOMINMAX` + `WIN32_LEAN_AND_MEAN` **hedef
+  düzeyinde** (`target_compile_definitions(flowget_core PUBLIC ...)`) tanımlandı; dosya başındaki
+  yerel blok kaldırıldı. Artık `curl.h`'ı hangi çeviri birimi çekerse çeksin makrolar kapalı.
+- Tekrarını önleyen kontrol: MSVC CI build'i (aynı hata anında `C4003/C2589` ile düşer). Kural:
+  `windows.h`'ı dolaylı çeken üçüncü parti başlıklar için tanım CMake'te, dosyada değil.
+
+### 2026-11-14 — Probe'un HEAD zaman aşımı hiç uygulanmadı (test 5 s bekledi)
+- Belirti: `Probe.FallsBackWhenHeadStalls` testi 200 ms beklemek yerine 5011 ms ölçtü; probe yine de
+  doğru sonucu döndürdüğü için hata yalnızca süre iddiasında ortaya çıktı.
+- Kök neden: `ProbeOptions.head_timeout_ms` yalnızca "HEAD atılsın mı" kararında kullanılıyordu;
+  `HttpRequest::timeout_ms` alanına **kopyalanmıyordu**. Bu yüzden HEAD, transport varsayılanlarına
+  (60 s low-speed) kaldı ve süreyi test sunucusunun 5 s soket zaman aşımı belirledi. Sessiz bir
+  davranış farkı: sonuç doğru, gecikme yanlış.
+- Düzeltme: HEAD isteği oluşturulurken `head_request.timeout_ms = options.head_timeout_ms` atanıyor.
+- Tekrarını önleyen kontrol: test hem `head_used == false` hem de **geçen süre < 5 s** iddia ediyor;
+  alan yeniden kopyalanmazsa test kırmızıya döner (senaryonun kendisi 5 s'lik varsayılanı aşar).
+
+### 2026-11-14 — Transport 416'yı "HTTP hatası" saydığı için probe boş dosyada başarısız göründü
+- Belirti: 0 baytlık dosyada probe `result.ok() == false`, mesaj `HTTP status 416`; beklenen
+  `unsatisfiable` + `content_length == 0`.
+- Kök neden: `curl_transport` her `status >= 400` yanıtını `HttpError::http_status` yapıyor (genel ve
+  doğru kural). Probe ise "taşıma hatası varsa erken dön" diyordu; `416`'nın 4xx olması ama anlamlı
+  bir cevap olması bu iki katmanın arasında kayboldu.
+- Düzeltme: probe, `http_status` + `status == 416` kombinasyonunu kabul edilen sonuç olarak ayıklıyor;
+  gerçek hata durumları (404 vb.) değişmedi.
+- Tekrarını önleyen kontrol: `Probe.ReportsUnsatisfiableRangeForEmptyResource`; S5'te sidecar
+  doğrulaması aynı ayrımı kullanacağı için karar `tasks/todo.md`'de not edildi.
+
+### 2026-11-15 — `pre-commit` yerelde hiç çalışmadı: kullanıcı önbellek dizinlerinde ACL hatası
+- Belirti: `py -m pre_commit run --all-files` önce `InvalidManifestError: ...repoutztkbt_\
+  .pre-commit-hooks.yaml is not a file`, sonra `PermissionError: [WinError 5] ...\.cache\pre-commit\
+  repoq346t_fr` verdi. `Get-Acl` aynı dizinde "Yetkisiz işlem" döndü; yani sorun pre-commit'te değil,
+  dizinin erişim denetimindeydi.
+- Kök neden: `%USERPROFILE%\.cache\pre-commit` (yarım kalmış klon) ve `%LOCALAPPDATA%\pypa\
+  virtualenv\Cache` dizinleri yazılamaz durumda (bozuk ACL / antivirüs kilidi). pre-commit bunları
+  varsayılan konumdan kullandığı için hook ortamı kurulamadı; hata mesajı manifest hatası gibi
+  göründüğü için ilk bakışta yanıltıcı.
+- Düzeltme: kullanıcı dizinlerine dokunmadan, oturumluk geçici konumlar verildi:
+  `PRE_COMMIT_HOME=%TEMP%\opencode\pre-commit-home`,
+  `VIRTUALENV_OVERRIDE_APP_DATA=%TEMP%\opencode\virtualenv-app-data`. Bu iki değişkenle
+  `run --all-files` tüm hook'larda `Passed` verdi.
+- Tekrarını önleyen kontrol: pre-commit yine "manifest is not a file" veya `WinError 5` derse, sorunu
+  depo/config içinde aramadan önce bu iki ortam değişkeniyle temiz bir önbellek kullan. CI etkilenmez
+  (temiz runner).

@@ -17,7 +17,7 @@
 
 ---
 
-## M0 — Karar, iskele, CI (≈2-3 gün) — **TAMAMLANDI (CI doğrulaması push sonrası)**
+## M0 — Karar, iskele, CI (≈2-3 gün) — **TAMAMLANDI**
 
 **Hedef:** Boş ama *çalışan* monorepo; kararlar dondurulmuş; CI ilk kez yeşil.
 
@@ -41,6 +41,10 @@
 
 **DoD:** Temiz makinede `cmake --preset windows-x64 && cmake --build --preset windows-x64 && ctest` → yeşil; CI'da aynı adımlar yeşil.
 
+**Kanıt (CI, 2026-11-14):** GitHub Actions run #3, commit `82cbf88` — Windows (MSVC), Linux
+(Clang, ASan/UBSan) ve lisans/politika (`policy`) job'larının üçü de yeşil. Böylece "CI doğrulaması
+push sonrası" notu kapandı.
+
 **Kanıt (yerel, MSVC 19.52 / CMake 4.3.1):** configure 9.1 s · build 11 hedef · `ctest` 1/1 passed ·
 ASCII olmayan dizin yolunda GTest keşfi kırıldı → `add_test`'e geçildi (`tasks/lessons.md`).
 
@@ -57,7 +61,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 |---|---|---|
 | S1a | vcpkg manifesti (curl, openssl, sqlite3, spdlog) + toolchain/CI + GPL denylist betiği | **TAMAMLANDI** |
 | S1b | `HttpClient` + tek bağlantılı indirme + yerel test HTTP sunucusu | **TAMAMLANDI** |
-| S2 | Probe (HEAD / `Range: bytes=0-0`, 206/200/416, metadata) | |
+| S2 | Probe (HEAD / `Range: bytes=0-0`, 206/200/416, metadata) | **TAMAMLANDI** |
 | S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | |
 | S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | |
@@ -76,12 +80,68 @@ dosya bırakmıyor, `chunked` (Content-Length yok) doğru, 302 takip ediliyor, i
 kısmi dosya siliniyor, kopan bağlantı tespit ediliyor. CLI e2e: 5 MiB dosya indirildi, kaynak/hedef
 SHA-256 aynı (`B26D7E22…`), 404 → `exit=1`, kısmi dosya yok.
 
+**S2 kanıtı (2026-11-15):** `flowget-cli probe <URL>` çalışıyor; birim + entegrasyon toplam **42 test**
+yeşil (`ctest` 2/2: 26 birim + 16 entegrasyon). Yerel Range sunucusuna karşı: 206 → `range_support:
+supported`, `size: 1024000`, ETag/Last-Modified/Content-Disposition/filename doğru, `exit=0`; 0 baytlık
+dosya → `416` + `size: 0` + `unsatisfiable`, `exit=0`; 404 → `exit=1`. Gerçek HTTPS
+(`https://example.com/`, `curl 8.23.0 schannel`) → `206`, `size: 577`, ETag okundu.
+
+### S2 — Probe — **TAMAMLANDI** (push sonrası CI hariç)
+
+**Hedef:** `probe(url)` → tek çağrıda güvenilir sunucu metadata'sı; S4 segment planlayıcısının tek
+girdisi.
+
+- [x] `HttpRequest`'e `method` alanı (`get`/`head`); curl transport'ta `CURLOPT_NOBODY`. Ayrıca
+      `HttpRequest::timeout_ms` (`CURLOPT_TIMEOUT_MS`) — probe'un HEAD zaman aşımı bunun üstünde.
+- [x] `core/include/flowget/http_range.h` + `.cpp` — `ContentRange` ve `parse_content_range()`:
+      `bytes a-b/N`, `bytes */N` (416), `*` (belirsiz toplam); boşluk/büyük-küçük harf toleransı; ters
+      aralık, taşma, `last >= total` ve çöp girdi reddi.
+- [x] `core/include/flowget/http_filename.h` + `.cpp` — `filename*` (RFC 5987, UTF-8) önceliği,
+      `filename=` düşüşü, percent-decode, `/ \ : <>|"?*`, kontrol karakteri ve `..` temizliği; sonuç
+      boşsa URL'in son segmenti, o da yoksa `download.bin`. (Plan adı `content_disposition.h` idi;
+      iki kaynağı da kapsadığı için `http_filename.h` seçildi.)
+- [x] `core/include/flowget/probe.h` + `core/src/probe.cpp` — **HEAD tamamen opsiyonel:** 403/405/501,
+      zaman aşımı veya herhangi bir taşıma hatasında sessizce atlanır (`head_used=false`); otorite
+      `GET Range: bytes=0-0`. Gövde 64 KiB'te kesilir (206'da 1 bayt), kesme kaynaklı
+      `CURLE_WRITE_ERROR` beklenen durum sayılır → `206 supported`, `200 ignored`, `416 unsatisfiable`.
+- [x] `ProbeResult`: `HttpError`, `status`, `content_length`, `range_support`, `etag`, `last_modified`,
+      `accept_ranges`, `content_type`, `content_disposition`, `suggested_filename`, `effective_url`,
+      `head_used`.
+- [x] CLI: `flowget-cli probe <url> [--user-agent UA] [--header "Ad: değer"]…` → `anahtar: değer`
+      satırları; `0` = başarı (Range yoksa da), `1` = taşıma/HTTP hatası, `2` = kullanım hatası.
+- [x] Test sunucusu: `Response::honor_range` → `bytes=a-b`/`bytes=a-` için `206` + `Content-Range`,
+      aralık dışı → `416` + `bytes */N`, `honor_range=false` → `200` + tam gövde; `Response::stall` →
+      isteği okuyup hiç yanıt vermeme (HEAD takılması); HEAD yanıtlarında gövde gönderilmiyor.
+- [x] Birim testleri (26): `Content-Range` parser (mutlu yol, `*/N`, 16 bozuk girdi) + dosya adı
+      çıkarımı (tırnaklı/tırnaksız/RFC 5987/yol kaçışı/Windows karakterleri).
+- [x] Entegrasyon testleri (`Probe.*`, 10): 206 + tam metadata; URL'den dosya adı; Range'i yok sayan
+      sunucu (200, 64 KiB'te kesme); 416 (0 bayt); 404; **HEAD 403**; **HEAD takılması** (200 ms
+      zaman aşımı, < 5 s'de dönüyor); `head_timeout_ms=0` ile hiç HEAD atmama; 302; ETag değişimi.
+- [x] Yerel kanıt: `ctest` 2/2 (42 test), `flowget-cli probe` çıktıları, pre-commit temiz.
+- [ ] Push sonrası CI yeşil — Linux (Clang, `-Wconversion -Wsign-conversion -Werror`) derlemesi
+      yerelde doğrulanamıyor; push kullanıcıda, sonuç buraya yazılacak.
+
+**Kararlar (onaylandı):**
+1. **Asıl kaynak `Range` GET**, `HEAD` yalnızca metadata zenginleştirmesi: herhangi bir HEAD hatası
+   (403/405/501, zaman aşımı, taşıma) probe'u başarısız saymaz; imzalı URL'ler yalnızca GET kabul
+   ettiği için bu şart. HEAD `head_timeout_ms=0` ile tamamen kapatılabilir.
+2. **`Accept-Ranges: bytes` tek başına kanıt sayılmaz** (yalan söyleyen sunucu var); karar 206/416'dan
+   verilir, `Accept-Ranges` yalnızca bilgi olarak taşınır.
+3. Multi-range (`multipart/byteranges`) desteklenmez: yalnızca `bytes=0-0` gönderilir.
+4. `416` taşıma katmanında `http_status` olarak görünür (4xx genel kuralı); probe bu tek durumu
+   anlamlı sonuç sayar — S5'te sidecar doğrulaması da aynı ayrımı kullanacak.
+
 ### Tasarım
 - [ ] `IStorage` arayüzü + `Win32Storage` (preallocate: `SetFileInformationByHandle(FileAllocationInfo)`),
       `PosixStorage` (`posix_fallocate`), `pwrite`/`pread`
-- [ ] `HttpClient` (curl multi, 1 engine thread, `curl_multi_wakeup` ile iptal)
-- [ ] `Probe`: HEAD + `Range: bytes=0-0` ile `206/200`, `Content-Length`, `Accept-Ranges`, `ETag`,
-      `Last-Modified`, `Content-Disposition`, `Content-Type` çıkarımı
+- [x] `HttpClient` — **S1b'de tamamlandı:** curl multi üzerinde senkron `get()`, tek uçuşta tek transfer;
+      iptal `CURLOPT_XFERINFOFUNCTION` ile 50 ms'de bir yoklanıyor (ölçülen sınır ~50 ms). Ayrı engine
+      thread + `curl_multi_wakeup` S4'te (aynı anda çok transfer) devreye alınacak; bugün gereksiz.
+      Kanıt: `core/src/curl_transport.cpp`, `tests/integration/single_stream_download_test.cpp`
+      (6 test yeşil, iptal testi `aborted` + kısmi dosya silinmiş).
+- [x] `Probe`: HEAD + `Range: bytes=0-0` ile `206/200`, `Content-Length`, `Accept-Ranges`, `ETag`,
+      `Last-Modified`, `Content-Disposition`, `Content-Type` çıkarımı — **S2'de tamamlandı** (416 ayrımı
+      ve opsiyonel HEAD dahil; kanıt: `tasks/todo.md` → S2 kanıtı)
 - [ ] `SegmentPlanner`: boyut/bağlantı → aralıklar; `min_segment_size = max(1 MiB, size/64)`
 - [ ] `SegmentWorker`: aralık başına easy handle; `CURLOPT_RANGE`, `If-Range`, `identity` encoding,
       HTTP/1.1 (multiplexing kapalı), keep-alive
@@ -95,8 +155,15 @@ SHA-256 aynı (`B26D7E22…`), 404 → `exit=1`, kısmi dosya yok.
       `--cookie`, `--sha256`, `--resume`, `--verbose`
 
 ### Test altyapısı (asıl işin yarısı)
-- [ ] Yerel test HTTP sunucusu (test-only): Range/206, **200'e düşme**, 416, ETag değişimi, yavaşlatma
-      (per-connection throttle), rastgele bağlantı koparma, `chunked`, yanlış `Content-Length`
+- [x] Yerel test HTTP sunucusunun çekirdeği — **S1b'de tamamlandı:** loopback + OS'in seçtiği port,
+      bağlantı başına iş parçacığı, `chunked` çerçeveleme, per-connection throttle, kopan bağlantı
+      üretimi, 5 s soket zaman aşımı. Kanıt: `tests/support/http_test_server.{h,cpp}`;
+      `chunked`/throttle/drop senaryoları 6 entegrasyon testinde fiilen koşuyor (`ctest` 2/2).
+- [x] Yerel test HTTP sunucusuna S2 senaryoları: Range/206, Range'i yok sayıp 200 dönme, 416, ETag
+      değişimi, HEAD 403 / HEAD takılması. Kanıt: `Response::honor_range` + `apply_range()`,
+      `Response::stall`, `Probe.*` testleri (10 test).
+- [ ] Yerel test HTTP sunucusuna yanlış `Content-Length` senaryosu — S5'te (resume/kurtarma bozulma
+      testi) gerekiyor, probe için gerekli değil.
 - [ ] 1 MB / 100 MB / 1 GB fixture üretimi (deterministik PRNG) + SHA-256 manifest
 - [ ] Birim: planner aralık matematiği (bitişik, boşluksuz, toplam=boyut), `Content-Range` parser,
       backoff hesabı, token bucket doğruluğu, bitmap serileştirme
