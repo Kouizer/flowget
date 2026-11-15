@@ -8,7 +8,19 @@ add_library(
     src/http_range.cpp
     src/http_filename.cpp
     src/probe.cpp
-    src/single_stream_download.cpp)
+    src/single_stream_download.cpp
+    src/storage.cpp)
+
+# One interface, one implementation per platform. Keeping the POSIX code out of the Windows build (and
+# vice versa) means a wrong include cannot hide behind an #if that nobody compiles.
+if(WIN32)
+    target_sources(flowget_core PRIVATE src/storage_win32.cpp)
+else()
+    target_sources(flowget_core PRIVATE src/storage_posix.cpp)
+    # 32-bit Android uses a 32-bit off_t unless this is defined before any system header; without it
+    # a >2 GiB download would silently wrap. storage_posix.cpp static_asserts the result.
+    target_compile_definitions(flowget_core PRIVATE _FILE_OFFSET_BITS=64)
+endif()
 add_library(FlowGet::core ALIAS flowget_core)
 
 target_include_directories(

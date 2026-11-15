@@ -24,6 +24,7 @@ add_executable(flowget_unit_tests
                unit/version_test.cpp
                unit/build_info_test.cpp
                unit/probe_parsing_test.cpp
+               unit/storage_test.cpp
 )
 target_link_libraries(flowget_unit_tests PRIVATE FlowGet::core GTest::gtest_main)
 
@@ -34,6 +35,7 @@ flowget_set_warnings(flowget_unit_tests)
 add_executable(flowget_integration_tests
                integration/single_stream_download_test.cpp
                integration/probe_test.cpp
+               integration/storage_io_test.cpp
                support/http_test_server.cpp)
 target_include_directories(flowget_integration_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(flowget_integration_tests PRIVATE FlowGet::core GTest::gtest_main
