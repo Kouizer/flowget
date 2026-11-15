@@ -56,7 +56,7 @@ TEST(StorageErrorTest, OffsetRangeValidationRejectsOverflowAndNegatives) {
 TEST(IoAllTest, WritesEverythingInOneAttempt) {
     std::vector<std::byte> buffer(4096, std::byte{0x5A});
     const IoOutcome outcome =
-        io_all(0, buffer.size(), kWrite, [&buffer](FileOffset, std::size_t remaining) {
+        io_all(0, buffer.size(), kWrite, [](FileOffset, std::size_t remaining) {
             IoAttempt attempt;
             attempt.bytes = remaining;
             return attempt;

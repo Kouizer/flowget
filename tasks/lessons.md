@@ -239,3 +239,22 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
   `edit`/`write` aracı ya da `Set-Content` **`-NoNewline` olmadan** kullanılmalı.
 - Tekrarını önleyen kontrol: toplu değişiklikten sonra `git diff --stat` + dosyada CR/LF sayımı;
   `pre-commit` (`end-of-file-fixer`) tek satıra inmiş dosyayı hemen yakalar.
+
+### 2026-11-15 — Kullanılmayan lambda yakalaması yalnız Clang'de hata oldu
+- Belirti: Linux CI (Clang, `-Werror`) `tests/unit/storage_test.cpp:59` için
+  `error: lambda capture 'buffer' is not used [-Wunused-lambda-capture]` verdi; Windows (MSVC `/W4
+  /WX`) aynı satırı uyarısız derledi ve S3 diliminin yerel kanıtı yeşil kaldı. Üretim kodu
+  (`storage_posix.cpp`) temizdi; hata yalnız testteydi.
+- Kök neden: `io_all(0, buffer.size(), ...)` çağrısında `buffer.size()` **lambda dışında** hesaplanıyor,
+  ama lambda yine de `[&buffer]` ile yakalanmıştı; gövde `buffer`'a hiç dokunmuyor. MSVC'nin `/W4`
+  setinde `-Wunused-lambda-capture`'ın karşılığı yok (C4100 yalnız *fonksiyon* parametresini
+  kapsar), bu yüzden uyarı yalnız Clang'de görünür. 2026-11-14'teki C4702 kaydının tersi yön:
+  orada yalnız MSVC, burada yalnız Clang yakalıyor.
+- Düzeltme: yakalama listesi `[]` yapıldı; uyarı susturulmadı, gereksiz yakalama silindi. Aynı sınıf
+  için `tests/` ve `core/` altındaki tüm lambda'lar, fonksiyon parametreleri ve yerel değişkenler
+  elle tarandı: başka kullanılmayan açık yakalama/parametre/değişken yok (`[&]` varsayılan
+  yakalamaları Clang yalnız gerçekten kullanılanı yakaladığı için bu sınıfa girmez).
+- Tekrarını önleyen kontrol: açık yakalama listesine yalnız gövdede okunan/yazılan değişkenler girer;
+  bir değeri sadece **argüman olarak hesaplamak** için yakalama gerekmez. Bu sınıfı yalnız Linux CI
+  (Clang) yakalar; yerel makinede Clang yok, bu yüzden yerel MSVC build'i tek başına yeterli kanıt
+  sayılmaz.
