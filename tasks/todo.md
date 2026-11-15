@@ -62,7 +62,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S1a | vcpkg manifesti (curl, openssl, sqlite3, spdlog) + toolchain/CI + GPL denylist betiği | **TAMAMLANDI** |
 | S1b | `HttpClient` + tek bağlantılı indirme + yerel test HTTP sunucusu | **TAMAMLANDI** |
 | S2 | Probe (HEAD / `Range: bytes=0-0`, 206/200/416, metadata) | **TAMAMLANDI** |
-| S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | |
+| S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | PLAN — onay bekliyor |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | |
 | S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | |
 | S6 | `RetryPolicy` + `RateLimiter` | |
@@ -144,7 +144,113 @@ girdisi.
 4. `416` taşıma katmanında `http_status` olarak görünür (4xx genel kuralı); probe bu tek durumu
    anlamlı sonuç sayar — S5'te sidecar doğrulaması da aynı ayrımı kullanacak.
 
+### S3 — IStorage + preallocate + pwrite — **UYGULANIYOR**
+
+**Hedef:** S4'ün ihtiyacı olan dosya katmanı: aynı dosyaya 8 işçi farklı offset'lerden yazar; yol UTF-8
+(Windows'ta UTF-16'ya çevrilir); ön tahsis isteğe bağlıdır ve başarısızlığı indirmeyi sessizce bozmaz.
+
+**Onaylanan kararlar (2026-11-15):**
+1. Arayüzde yol tipi **UTF-8 `std::string`** (`std::filesystem::path` değil).
+2. Preallocate desteklenmiyorsa **`preallocate_unsupported` + devam**; `ENOSPC`/`EIO` **fatal**.
+3. `SingleStreamDownloader` bu dilimde değişmez; taşıma işi **S4'ün ilk maddesi**.
+
+**Dosyalar**
+- [ ] `core/include/flowget/storage.h` — `IStorage`, `StorageError`, `StorageResult`, `OpenMode`,
+      `FileOffset`, `make_platform_storage()`
+- [ ] `core/include/flowget/storage_detail.h` — yalnız test seam'i: kısmi yazma/EINTR döngüsü
+      (`flowget::detail::io_all`); C ABI'nin parçası değil
+- [ ] `core/src/storage.cpp` — `storage_error_name`, `storage_error_is_fatal`, platform seçimi
+- [ ] `core/src/storage_win32.cpp`, `core/src/storage_posix.cpp` — tek arayüz, iki uygulama
+- [ ] `core/CMakeLists.txt` — yeni kaynaklar; POSIX'te `_FILE_OFFSET_BITS=64` **hedef düzeyinde** +
+      `static_assert(sizeof(off_t) >= sizeof(std::int64_t))`
+- [ ] `tests/unit/storage_test.cpp`, `tests/integration/storage_io_test.cpp` + `tests/CMakeLists.txt`
+
+**Arayüz**
+- `open(const std::string& utf8_path, OpenMode)`; `OpenMode = { read_only, read_write, read_write_truncate }`
+  (`read_write`: varsa açar, veriyi korur — resume; `read_write_truncate`: oluşturur + 0'a indirir)
+- `reopen()` (aynı yol/mod ile kapat+aç), `close()` (idempotent), `is_open()`
+- `preallocate(int64 size)`, `write_at(offset, data, size, out written)`, `read_at(...)`, `flush()`,
+  `size(out)`
+- **Yol neden `std::filesystem::path` değil:** Windows'ta `path`'i `std::string`'den kurmak ANSI kod
+  sayfası kullanır (`tasks/lessons.md`: "Varsayılan Proje"). UTF-8 `std::string` alıp içeride
+  `MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS)` ile `wstring`'e çevirmek **doğru davranışı
+  varsayılan** yapar; kural geliştiricinin belleğine kalmaz. C ABI de UTF-8 `char*` taşıyor.
+- Geçersiz UTF-8 → `invalid_argument` (Windows). POSIX'te yol baytları opak → `open` hatası.
+
+**Windows**
+- `CreateFileW` + `FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE`
+- Offset'e yazma: `FILE_FLAG_OVERLAPPED` **kullanılmaz**. Senkron handle + her çağrıda yığ üzerinde
+  sıfırlanmış `OVERLAPPED{Offset, OffsetHigh}` ile `WriteFile(..., &written, &ov)`. MS dokümanı:
+  senkron handle'da `lpOverlapped` non-NULL ise yazma verilen offset'ten başlar ve çağrı bitene kadar
+  döner. Paylaşılan dosya konumu kullanılmaz → **mutex yok**, 8 işçi paralel yazar. (Yedek plan:
+  `SetFilePointerEx` + iç mutex; profilde çekişme görülürse.)
+- `preallocate`: `GetFileSizeEx`; istenen ≤ mevcut → hiçbir şey yapma (asla küçültme).
+  `SetFileInformationByHandle(FileAllocationInfo)` kümeleri rezerve eder (EOF'u uzatması garanti
+  değil), ardından `SetFilePointerEx` + `SetEndOfFile` ile EOF = size (posix_fallocate ile aynı
+  gözlenebilir davranış). Rezervasyon `ERROR_INVALID_PARAMETER/NOT_SUPPORTED/CALL_NOT_IMPLEMENTED`
+  ile düşerse → `preallocate_unsupported` (fatal değil). `SetEndOfFile` hatası (disk dolu) →
+  `preallocate` (fatal).
+- `flush` = `FlushFileBuffers`. Tek çağrı ≤ 64 MiB parçalara bölünür; `size_t`→`DWORD` açık cast +
+  aralık kontrolü (`-Wconversion` tuzağı).
+
+**POSIX**
+- `open(..., O_CLOEXEC)`, `pread`/`pwrite`, `ftruncate`, `fsync` (Android'de yt-dlp `fork/exec`
+  edecek; fd sızmasın diye `O_CLOEXEC` şart)
+- Tür dönüşümü: `ssize_t n = ::pwrite(fd, data, size, static_cast<off_t>(offset))`; `n < 0` → `errno`;
+  `n == 0` → hata (ilerleme yok); `written += static_cast<std::size_t>(n)` yalnız `n > 0` sonrası.
+  Offset negatif veya `off_t`'ye sığmıyorsa `invalid_argument`. `size_t` uzunluk değişmez.
+- `posix_fallocate` **hata kodunu döndürür** (errno'ya yazmaz!). `EOPNOTSUPP/ENOSYS/EINVAL` →
+  `ftruncate(size)` ile EOF uzat + `preallocate_unsupported`; `ENOSPC/EIO` → `preallocate` (fatal).
+
+**Kısmi yazma / EINTR**
+- Tek döngü (`flowget::detail::io_all`), iki platform da onu kullanır: dönen bayt < istenen → offset
+  ilerlet, devam; `EINTR` (POSIX'te ayrıca `EAGAIN`) → aynı offset'ten tekrar; `n == 0` → hata;
+  ardışık 100 ilerlemesiz tekrar → hata (sonsuz döngü koruması).
+- Testler sahte syscall ile deterministik: 1 baytlık kısmi yazmalar, iki kez `EINTR`, aralıklı 0
+  dönüşü, 100+ `EINTR` → hata.
+
+**Hata modeli**
+- Metotlar `StorageResult{error, platform_code, message}` döner (`platform_code` = `GetLastError()` /
+  `errno`). Exception sınırı aşmaz (ADR-0002); `noexcept` işaretlenmez (message `std::string` tahsisi).
+- `storage_error_is_fatal()`: `none` ve `preallocate_unsupported` fatal değil; diğerleri fatal.
+- `write_at` hatasında `written` o ana kadar yazılan baytı verir (S6 retry aynı offset'ten devam eder).
+
+**Eşzamanlılık sözleşmesi**
+- `write_at` / `read_at`: aynı instance'ta çok iş parçacığından güvenli (paylaşılan dosya konumu yok:
+  Windows'ta yığ `OVERLAPPED`, POSIX'te `pwrite`/`pread`).
+- `open/reopen/close/preallocate/flush/size`: çağıran dışlar (S4 işçiler durmuşken çağırır); başlıkta
+  açıkça yazılır.
+
+**Testler**
+- Birim: `storage_error_name`, `storage_error_is_fatal`, `io_all` (kısmi/EINTR/0/100 tekrar), kapalıyken
+  I/O → `not_open`, ikinci `open` → `already_open`, negatif offset/size → `invalid_argument`.
+- Entegrasyon (gerçek dosya, build dizini): preallocate 8 MiB → `size() == 8 MiB`; **8 iş parçacığı aynı
+  dosyanın ayrık aralıklarına aynı anda `write_at`** → okunan içerik birebir; sıra dışı offset + üzerine
+  yazma; EOF ötesi `read_at` → hata; `reopen` sonrası veri yerinde; `read_write_truncate` 5 MiB dosyayı
+  0'a indirir; `read_only` dosyaya yazma → hata; iki kez `close` güvenli; preallocate mevcut veriyi
+  küçültmez; ASCII olmayan yol (`İndirilen_çğış.bin`, ayrıca `İndirilenler/şğü-中文-🚀.bin`) ile
+  open/write/read round-trip (hem Windows hem POSIX dalı).
+- Yerel kanıt: `ctest` 2/2 (mevcut 42 + ~15 yeni), `pre_commit run --all-files` temiz, build ASCII
+  olmayan yolda da tekrar edilir.
+
+**Kapsam dışı (bilinçli)**
+- `SingleStreamDownloader` bu dilimde `IStorage`'a taşınmaz. **Bilinen bug:** bugünkü `ofstream` +
+  `path.string()` ANSI yolu ASCII olmayan yolda kırabilir; S4'te IStorage'a geçişle kapanacak.
+- Windows long-path (`\\?\`, > 260 karakter), sparse/`SetFileValidData`, sektör hizalı I/O yok.
+
+**Riskler / tuzaklar**
+- `SetFileInformationByHandle` `GENERIC_WRITE` ister (bizde var); FAT/exFAT/ağ paylaşımında
+  desteklenmez → downgrade yolu sınıflandırma birim testiyle doğrulanır.
+- `posix_fallocate` bazı dosya sistemlerinde yavaş; 1 GB ölçümü S7 benchmark'ına not.
+- **Linux derlemesi yerelde doğrulanamaz** (Windows makine): `-Wconversion/-Wsign-conversion` ve
+  ASan/UBSan sonucu push sonrası CI'da doğrulanacak; bu açıkça raporlanacak.
+
+**DoD:** yukarıdaki testler yeşil, `-Werror` temiz, clang-format temiz, ASCII olmayan yolda round-trip
+kanıtlı, Linux CI yeşili (push sonrası).
+
 ### Tasarım
+- [ ] **S4'ün ilk maddesi:** `SingleStreamDownloader`'ı `IStorage`'a taşı, ASCII olmayan hedef yolla test
+      et (bugün `ofstream` + `path.string()` ANSI kod sayfası kullanır; `tasks/todo.md` S3 kararı).
 - [ ] `IStorage` arayüzü + `Win32Storage` (preallocate: `SetFileInformationByHandle(FileAllocationInfo)`),
       `PosixStorage` (`posix_fallocate`), `pwrite`/`pread`
 - [x] `HttpClient` — **S1b'de tamamlandı:** curl multi üzerinde senkron `get()`, tek uçuşta tek transfer;
