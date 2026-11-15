@@ -84,7 +84,7 @@ doğruluyor. Windows job'u run #5'te yeşildi ama aynı yapılandırma hatasın�
 ondaki de). Yerel kanıt: sığ klonda hata yeniden üretildi, script sonrası baseline okunabildi;
 ikinci koşu idempotent (`already present`), üç hatalı girdi `exit=1`. Yerel build/`ctest`: configure +
 build (24 hedef) + `ctest` 2/2 passed, `pre_commit run --all-files` temiz. CI yeşili push sonrası
-doğrulanacak (Linux yerelde koşulamıyor).
+doğrulandı: run #6, commit `8aaf255` — üç job da yeşil.
 
 **S1b kanıtı (2026-11-14):** `flowget-cli get <URL> -o <dosya>` tek bağlantıyla indiriyor; yerel test
 sunucusuna karşı 6 entegrasyon testi yeşil (`ctest` 2/2): gövde birebir yazılıyor (1 MiB), 404'te
@@ -98,7 +98,7 @@ supported`, `size: 1024000`, ETag/Last-Modified/Content-Disposition/filename do�
 dosya → `416` + `size: 0` + `unsatisfiable`, `exit=0`; 404 → `exit=1`. Gerçek HTTPS
 (`https://example.com/`, `curl 8.23.0 schannel`) → `206`, `size: 577`, ETag okundu.
 
-### S2 — Probe — **TAMAMLANDI** (push sonrası CI hariç)
+### S2 — Probe — **TAMAMLANDI**
 
 **Hedef:** `probe(url)` → tek çağrıda güvenilir sunucu metadata'sı; S4 segment planlayıcısının tek
 girdisi.
@@ -130,8 +130,9 @@ girdisi.
       sunucu (200, 64 KiB'te kesme); 416 (0 bayt); 404; **HEAD 403**; **HEAD takılması** (200 ms
       zaman aşımı, < 5 s'de dönüyor); `head_timeout_ms=0` ile hiç HEAD atmama; 302; ETag değişimi.
 - [x] Yerel kanıt: `ctest` 2/2 (42 test), `flowget-cli probe` çıktıları, pre-commit temiz.
-- [ ] Push sonrası CI yeşil — Linux (Clang, `-Wconversion -Wsign-conversion -Werror`) derlemesi
-      yerelde doğrulanamıyor; push kullanıcıda, sonuç buraya yazılacak.
+- [x] Push sonrası CI yeşil — **Kanıt (CI, 2026-11-15):** GitHub Actions run #6, commit `8aaf255` —
+      Windows (MSVC), Linux (Clang, ASan/UBSan) ve `policy` job'larının üçü de yeşil. Linux derlemesi
+      (`-Wconversion -Wsign-conversion -Werror`) böylece CI'da doğrulandı.
 
 **Kararlar (onaylandı):**
 1. **Asıl kaynak `Range` GET**, `HEAD` yalnızca metadata zenginleştirmesi: herhangi bir HEAD hatası
