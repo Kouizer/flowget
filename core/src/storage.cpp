@@ -33,8 +33,9 @@ const char* storage_error_name(StorageError error) noexcept {
 }
 
 bool storage_error_is_fatal(StorageError error) noexcept {
-    // `preallocate_unsupported` only means the filesystem cannot reserve clusters up front; the file
-    // was still extended, so the download continues and a later write may still fail with ENOSPC.
+    // `preallocate_unsupported` only means the filesystem cannot reserve clusters up front; the
+    // file was still extended, so the download continues and a later write may still fail with
+    // ENOSPC.
     return error != StorageError::none && error != StorageError::preallocate_unsupported;
 }
 

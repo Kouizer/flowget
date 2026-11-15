@@ -8,9 +8,9 @@
 #include <limits>
 
 // Internal seam, not part of the C ABI. The partial-write/EINTR loop is shared by both platform
-// implementations and is tested with fake syscalls: forcing a real filesystem to return a short write
-// or EINTR is not possible deterministically, and an untested retry loop in a download engine is how
-// silent truncation ships.
+// implementations and is tested with fake syscalls: forcing a real filesystem to return a short
+// write or EINTR is not possible deterministically, and an untested retry loop in a download engine
+// is how silent truncation ships.
 
 namespace flowget::detail {
 
@@ -35,8 +35,8 @@ struct IoOutcome {
 inline constexpr int kMaxAttemptsWithoutProgress = 100;
 
 // True when [offset, offset + size) is representable: offset is non-negative and the end does not
-// overflow FileOffset. Checked before any cast to off_t or OVERLAPPED, so a wrapped offset can never
-// be written to a small offset instead.
+// overflow FileOffset. Checked before any cast to off_t or OVERLAPPED, so a wrapped offset can
+// never be written to a small offset instead.
 inline bool offset_range_valid(FileOffset offset, std::size_t size) noexcept {
     if (offset < 0) {
         return false;
@@ -47,19 +47,17 @@ inline bool offset_range_valid(FileOffset offset, std::size_t size) noexcept {
     return length <= limit && start <= limit - length;
 }
 
-// Repeats `attempt(offset, size)` until `size` bytes are transferred or an error is not worth retrying.
-// `failure` is the error reported for a failed attempt (StorageError::read or ::write).
+// Repeats `attempt(offset, size)` until `size` bytes are transferred or an error is not worth
+// retrying. `failure` is the error reported for a failed attempt (StorageError::read or ::write).
 //
 // Semantics that matter for a download engine:
 //   * a short transfer (returned bytes < requested) advances the offset and continues;
 //   * EINTR/EAGAIN retries the same offset, up to kMaxAttemptsWithoutProgress times in a row;
-//   * a zero-byte return is an error, never a retry: on a positional read it means end-of-file, on a
+//   * a zero-byte return is an error, never a retry: on a positional read it means end-of-file, on
+//   a
 //     write it means the filesystem made no progress.
 template <typename AttemptFn>
-IoOutcome io_all(FileOffset offset,
-                 std::size_t size,
-                 StorageError failure,
-                 AttemptFn&& attempt) {
+IoOutcome io_all(FileOffset offset, std::size_t size, StorageError failure, AttemptFn&& attempt) {
     IoOutcome outcome;
     int attempts_without_progress = 0;
     while (outcome.transferred < size) {
@@ -77,8 +75,8 @@ IoOutcome io_all(FileOffset offset,
             return outcome;
         }
         if (result.bytes > remaining) {
-            // A syscall cannot report more than it was asked for. Treat it as a broken driver rather
-            // than advancing the offset past the buffer.
+            // A syscall cannot report more than it was asked for. Treat it as a broken driver
+            // rather than advancing the offset past the buffer.
             outcome.error = StorageError::invalid_argument;
             outcome.platform_code = result.platform_code;
             return outcome;

@@ -6,14 +6,15 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
-#include <fcntl.h>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
+
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <type_traits>
 #include <unistd.h>
-#include <utility>
 
 // off_t is 32-bit on a 32-bit Android build unless _FILE_OFFSET_BITS=64 is defined;
 // core/CMakeLists.txt sets it on the target. These assertions turn a silently truncated >2 GiB
@@ -50,14 +51,15 @@ std::string describe(int code, std::string_view operation, std::string_view deta
 class PosixStorage final : public IStorage {
 public:
     PosixStorage() = default;
+
     ~PosixStorage() override {
         close();
     }
 
     StorageResult open(const std::string& utf8_path, OpenMode mode) override {
         if (fd_ >= 0) {
-            return detail::make_storage_error(StorageError::already_open, 0,
-                                              "storage is already open");
+            return detail::make_storage_error(
+                StorageError::already_open, 0, "storage is already open");
         }
         if (utf8_path.empty()) {
             return detail::invalid_argument_error("path is empty");
@@ -80,13 +82,14 @@ public:
         const int fd = ::open(utf8_path.c_str(), flags, create_mode);
         if (fd < 0) {
             const int code = errno;
-            return detail::make_storage_error(StorageError::open, code,
-                                              describe(code, "open", utf8_path));
+            return detail::make_storage_error(
+                StorageError::open, code, describe(code, "open", utf8_path));
         }
 
         fd_ = fd;
         path_ = utf8_path;
-        // reopen() must never truncate, so the truncate mode is downgraded after the open succeeded.
+        // reopen() must never truncate, so the truncate mode is downgraded after the open
+        // succeeded.
         mode_ = mode == OpenMode::read_write_truncate ? OpenMode::read_write : mode;
         return {};
     }
@@ -114,8 +117,8 @@ public:
         // close and Linux releases it anyway. Retrying could close a recycled descriptor.
         if (::close(fd) != 0) {
             const int code = errno;
-            return detail::make_storage_error(StorageError::close, code,
-                                              describe(code, "close", path_));
+            return detail::make_storage_error(
+                StorageError::close, code, describe(code, "close", path_));
         }
         return {};
     }
@@ -160,16 +163,16 @@ public:
             } while (truncated != 0 && errno == EINTR);
             if (truncated != 0) {
                 const int truncate_code = errno;
-                return detail::make_storage_error(
-                    StorageError::preallocate, truncate_code,
-                    describe(truncate_code, "ftruncate", path_));
+                return detail::make_storage_error(StorageError::preallocate,
+                                                  truncate_code,
+                                                  describe(truncate_code, "ftruncate", path_));
             }
-            return detail::make_storage_error(
-                StorageError::preallocate_unsupported, code,
-                describe(code, "posix_fallocate", path_));
+            return detail::make_storage_error(StorageError::preallocate_unsupported,
+                                              code,
+                                              describe(code, "posix_fallocate", path_));
         }
-        return detail::make_storage_error(StorageError::preallocate, code,
-                                          describe(code, "posix_fallocate", path_));
+        return detail::make_storage_error(
+            StorageError::preallocate, code, describe(code, "posix_fallocate", path_));
     }
 
     StorageResult write_at(FileOffset offset,
@@ -191,7 +194,9 @@ public:
         }
 
         const detail::IoOutcome outcome =
-            detail::io_all(offset, size, StorageError::write,
+            detail::io_all(offset,
+                           size,
+                           StorageError::write,
                            [this, data, offset](FileOffset current, std::size_t remaining) {
                                detail::IoAttempt attempt;
                                const std::size_t chunk = std::min(remaining, kMaxChunk);
@@ -220,14 +225,11 @@ public:
         message += " after ";
         message += std::to_string(outcome.transferred);
         message += " bytes";
-        return detail::make_storage_error(outcome.error, outcome.platform_code,
-                                          std::move(message));
+        return detail::make_storage_error(outcome.error, outcome.platform_code, std::move(message));
     }
 
-    StorageResult read_at(FileOffset offset,
-                          std::byte* data,
-                          std::size_t size,
-                          std::size_t& read) override {
+    StorageResult
+    read_at(FileOffset offset, std::byte* data, std::size_t size, std::size_t& read) override {
         read = 0;
         if (fd_ < 0) {
             return detail::not_open_error();
@@ -242,24 +244,24 @@ public:
             return {};
         }
 
-        const detail::IoOutcome outcome =
-            detail::io_all(offset, size, StorageError::read,
-                           [this, data, offset](FileOffset current, std::size_t remaining) {
-                               detail::IoAttempt attempt;
-                               const std::size_t chunk = std::min(remaining, kMaxChunk);
-                               std::byte* chunk_data =
-                                   data + static_cast<std::size_t>(current - offset);
-                               const ssize_t result =
-                                   ::pread(fd_, chunk_data, chunk, static_cast<off_t>(current));
-                               if (result < 0) {
-                                   attempt.failed = true;
-                                   attempt.platform_code = errno;
-                                   attempt.retryable = is_retryable_errno(errno);
-                                   return attempt;
-                               }
-                               attempt.bytes = static_cast<std::size_t>(result);
-                               return attempt;
-                           });
+        const detail::IoOutcome outcome = detail::io_all(
+            offset,
+            size,
+            StorageError::read,
+            [this, data, offset](FileOffset current, std::size_t remaining) {
+                detail::IoAttempt attempt;
+                const std::size_t chunk = std::min(remaining, kMaxChunk);
+                std::byte* chunk_data = data + static_cast<std::size_t>(current - offset);
+                const ssize_t result = ::pread(fd_, chunk_data, chunk, static_cast<off_t>(current));
+                if (result < 0) {
+                    attempt.failed = true;
+                    attempt.platform_code = errno;
+                    attempt.retryable = is_retryable_errno(errno);
+                    return attempt;
+                }
+                attempt.bytes = static_cast<std::size_t>(result);
+                return attempt;
+            });
         read = outcome.transferred;
         if (outcome.error == StorageError::none) {
             return {};
@@ -271,8 +273,7 @@ public:
         message += " bytes, got ";
         message += std::to_string(outcome.transferred);
         message += ')';
-        return detail::make_storage_error(outcome.error, outcome.platform_code,
-                                          std::move(message));
+        return detail::make_storage_error(outcome.error, outcome.platform_code, std::move(message));
     }
 
     StorageResult flush() override {
@@ -285,8 +286,8 @@ public:
         } while (result != 0 && errno == EINTR);
         if (result != 0) {
             const int code = errno;
-            return detail::make_storage_error(StorageError::flush, code,
-                                              describe(code, "fsync", path_));
+            return detail::make_storage_error(
+                StorageError::flush, code, describe(code, "fsync", path_));
         }
         return {};
     }
@@ -296,11 +297,11 @@ public:
         if (fd_ < 0) {
             return detail::not_open_error();
         }
-        struct stat info {};
+        struct stat info{};
         if (::fstat(fd_, &info) != 0) {
             const int code = errno;
-            return detail::make_storage_error(StorageError::query_size, code,
-                                              describe(code, "fstat", path_));
+            return detail::make_storage_error(
+                StorageError::query_size, code, describe(code, "fstat", path_));
         }
         out = static_cast<FileOffset>(info.st_size);
         return {};

@@ -22,9 +22,10 @@ using flowget::StorageError;
 using flowget::StorageResult;
 
 // UTF-8 bytes -> native path without passing through the ANSI code page. Building
-// std::filesystem::path from std::string decodes the bytes in the ANSI code page on Windows and mangles
-// every non-ASCII name (tasks/lessons.md, 2026-11-14). The test needs this only to create directories
-// and to assert that the OS sees the same name; IStorage itself takes UTF-8 and converts internally.
+// std::filesystem::path from std::string decodes the bytes in the ANSI code page on Windows and
+// mangles every non-ASCII name (tasks/lessons.md, 2026-11-14). The test needs this only to create
+// directories and to assert that the OS sees the same name; IStorage itself takes UTF-8 and
+// converts internally.
 std::filesystem::path utf8_path(const std::string& utf8) {
     const auto* begin = reinterpret_cast<const char8_t*>(utf8.data());
     return std::filesystem::path(std::u8string(begin, utf8.size()));
@@ -47,7 +48,8 @@ std::vector<std::byte> make_pattern(std::size_t size, std::uint8_t seed) {
     return data;
 }
 
-// A filesystem that cannot reserve clusters still extends the file, which is a documented downgrade.
+// A filesystem that cannot reserve clusters still extends the file, which is a documented
+// downgrade.
 void expect_preallocate_usable(const StorageResult& result) {
     EXPECT_TRUE(result.ok() || result.error == StorageError::preallocate_unsupported)
         << flowget::storage_error_name(result.error) << ": " << result.message;
@@ -115,8 +117,8 @@ TEST_F(StorageIoTest, WritesAtOffsetAndReadsBack) {
     std::size_t read = 0;
     ASSERT_TRUE(storage->read_at(0, zeros.data(), zeros.size(), read).ok());
     EXPECT_EQ(read, zeros.size());
-    EXPECT_TRUE(std::all_of(zeros.begin(), zeros.end(),
-                            [](std::byte byte) { return byte == std::byte{0}; }));
+    EXPECT_TRUE(std::all_of(
+        zeros.begin(), zeros.end(), [](std::byte byte) { return byte == std::byte{0}; }));
 
     std::vector<std::byte> read_back(pattern.size());
     ASSERT_TRUE(storage->read_at(4096, read_back.data(), read_back.size(), read).ok());
@@ -170,7 +172,8 @@ TEST_F(StorageIoTest, EightThreadsWriteDisjointRangesConcurrently) {
     for (std::size_t thread = 0; thread < kThreads; ++thread) {
         const std::vector<std::byte> pattern =
             make_pattern(kChunk, static_cast<std::uint8_t>(thread));
-        std::copy(pattern.begin(), pattern.end(),
+        std::copy(pattern.begin(),
+                  pattern.end(),
                   expected.begin() + static_cast<std::ptrdiff_t>(thread * kChunk));
     }
 
@@ -184,9 +187,8 @@ TEST_F(StorageIoTest, EightThreadsWriteDisjointRangesConcurrently) {
         workers.emplace_back([&storage, &results, &written, &expected, &start, thread] {
             start.arrive_and_wait();
             const std::size_t offset = thread * kChunk;
-            results[thread] =
-                storage->write_at(static_cast<FileOffset>(offset), expected.data() + offset, kChunk,
-                                  written[thread]);
+            results[thread] = storage->write_at(
+                static_cast<FileOffset>(offset), expected.data() + offset, kChunk, written[thread]);
         });
     }
     for (std::thread& worker : workers) {
@@ -207,12 +209,14 @@ TEST_F(StorageIoTest, EightThreadsWriteDisjointRangesConcurrently) {
     EXPECT_EQ(read, kTotal);
     expect_bytes_equal(actual, 0, expected, 0, kTotal);
 
-    // Also verify each worker's range on its own, so a whole-file match cannot hide a shifted slice.
+    // Also verify each worker's range on its own, so a whole-file match cannot hide a shifted
+    // slice.
     for (std::size_t thread = 0; thread < kThreads; ++thread) {
         std::vector<std::byte> slice(kChunk);
         const std::size_t offset = thread * kChunk;
-        ASSERT_TRUE(storage->read_at(static_cast<FileOffset>(offset), slice.data(), slice.size(), read)
-                        .ok());
+        ASSERT_TRUE(
+            storage->read_at(static_cast<FileOffset>(offset), slice.data(), slice.size(), read)
+                .ok());
         EXPECT_EQ(read, kChunk);
         expect_bytes_equal(slice, 0, expected, offset, kChunk);
     }
@@ -360,9 +364,10 @@ TEST_F(StorageIoTest, InvalidArgumentsAreRejectedWhileOpen) {
               StorageError::invalid_argument);
     EXPECT_EQ(storage->preallocate(-1).error, StorageError::invalid_argument);
     // offset + size overflows FileOffset: must be rejected, never wrapped to a small offset.
-    EXPECT_EQ(storage->write_at(std::numeric_limits<FileOffset>::max(), buffer, sizeof(buffer), count)
-                  .error,
-              StorageError::invalid_argument);
+    EXPECT_EQ(
+        storage->write_at(std::numeric_limits<FileOffset>::max(), buffer, sizeof(buffer), count)
+            .error,
+        StorageError::invalid_argument);
 
     FileOffset size = 0;
     EXPECT_TRUE(storage->size(size).ok());
@@ -380,8 +385,9 @@ TEST_F(StorageIoTest, CloseIsIdempotent) {
     EXPECT_EQ(storage->size(size).error, StorageError::not_open);
 }
 
-// Turkish, CJK and emoji in both the directory and the file name: the UTF-8 -> UTF-16 conversion must
-// not go through the ANSI code page. The old ofstream/path.string() path broke here on Windows.
+// Turkish, CJK and emoji in both the directory and the file name: the UTF-8 -> UTF-16 conversion
+// must not go through the ANSI code page. The old ofstream/path.string() path broke here on
+// Windows.
 TEST_F(StorageIoTest, NonAsciiPathRoundTrip) {
     const std::string directory_utf8 = "İndirilenler";
     const std::string file_utf8 = "İndirilen_çğış.bin";

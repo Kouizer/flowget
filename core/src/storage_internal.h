@@ -9,9 +9,8 @@
 // Helpers shared by the two platform implementations. Not installed with the public headers.
 namespace flowget::detail {
 
-inline StorageResult make_storage_error(StorageError error,
-                                        int platform_code,
-                                        std::string message) {
+inline StorageResult
+make_storage_error(StorageError error, int platform_code, std::string message) {
     StorageResult result;
     result.error = error;
     result.platform_code = platform_code;

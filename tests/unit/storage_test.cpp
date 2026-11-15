@@ -10,13 +10,13 @@
 
 namespace {
 
-using flowget::detail::IoAttempt;
-using flowget::detail::IoOutcome;
-using flowget::detail::io_all;
 using flowget::FileOffset;
 using flowget::OpenMode;
 using flowget::StorageError;
 using flowget::StorageResult;
+using flowget::detail::io_all;
+using flowget::detail::IoAttempt;
+using flowget::detail::IoOutcome;
 
 constexpr StorageError kWrite = StorageError::write;
 constexpr StorageError kRead = StorageError::read;
@@ -30,20 +30,24 @@ TEST(StorageErrorTest, NamesAndFatality) {
     EXPECT_FALSE(flowget::storage_error_is_fatal(StorageError::none));
     // A filesystem that cannot reserve clusters is a logged downgrade, not an aborted download.
     EXPECT_FALSE(flowget::storage_error_is_fatal(StorageError::preallocate_unsupported));
-    for (const StorageError fatal :
-         {StorageError::invalid_argument, StorageError::not_open, StorageError::already_open,
-          StorageError::open, StorageError::read, StorageError::write, StorageError::preallocate,
-          StorageError::flush, StorageError::close, StorageError::query_size}) {
-        EXPECT_TRUE(flowget::storage_error_is_fatal(fatal))
-            << flowget::storage_error_name(fatal);
+    for (const StorageError fatal : {StorageError::invalid_argument,
+                                     StorageError::not_open,
+                                     StorageError::already_open,
+                                     StorageError::open,
+                                     StorageError::read,
+                                     StorageError::write,
+                                     StorageError::preallocate,
+                                     StorageError::flush,
+                                     StorageError::close,
+                                     StorageError::query_size}) {
+        EXPECT_TRUE(flowget::storage_error_is_fatal(fatal)) << flowget::storage_error_name(fatal);
     }
 }
 
 TEST(StorageErrorTest, OffsetRangeValidationRejectsOverflowAndNegatives) {
     EXPECT_TRUE(flowget::detail::offset_range_valid(0, 0));
     EXPECT_TRUE(flowget::detail::offset_range_valid(0, 4096));
-    EXPECT_TRUE(flowget::detail::offset_range_valid(
-        std::numeric_limits<FileOffset>::max() - 1, 1));
+    EXPECT_TRUE(flowget::detail::offset_range_valid(std::numeric_limits<FileOffset>::max() - 1, 1));
     // offset + size wraps past INT64_MAX: must not be cast to off_t.
     EXPECT_FALSE(flowget::detail::offset_range_valid(std::numeric_limits<FileOffset>::max(), 1));
     EXPECT_FALSE(flowget::detail::offset_range_valid(-1, 1));
@@ -51,12 +55,12 @@ TEST(StorageErrorTest, OffsetRangeValidationRejectsOverflowAndNegatives) {
 
 TEST(IoAllTest, WritesEverythingInOneAttempt) {
     std::vector<std::byte> buffer(4096, std::byte{0x5A});
-    const IoOutcome outcome = io_all(0, buffer.size(), kWrite,
-                                     [&buffer](FileOffset, std::size_t remaining) {
-                                         IoAttempt attempt;
-                                         attempt.bytes = remaining;
-                                         return attempt;
-                                     });
+    const IoOutcome outcome =
+        io_all(0, buffer.size(), kWrite, [&buffer](FileOffset, std::size_t remaining) {
+            IoAttempt attempt;
+            attempt.bytes = remaining;
+            return attempt;
+        });
     EXPECT_EQ(outcome.error, StorageError::none);
     EXPECT_EQ(outcome.transferred, buffer.size());
     EXPECT_EQ(outcome.platform_code, 0);
@@ -66,13 +70,12 @@ TEST(IoAllTest, LoopsOverPartialWrites) {
     std::vector<std::byte> buffer(64, std::byte{0});
     std::vector<FileOffset> offsets;
     const IoOutcome outcome =
-        io_all(10, buffer.size(), kWrite,
-               [&offsets](FileOffset offset, std::size_t) {
-                   offsets.push_back(offset);
-                   IoAttempt attempt;
-                   attempt.bytes = 1; // the classic hostile filesystem: one byte per call
-                   return attempt;
-               });
+        io_all(10, buffer.size(), kWrite, [&offsets](FileOffset offset, std::size_t) {
+            offsets.push_back(offset);
+            IoAttempt attempt;
+            attempt.bytes = 1; // the classic hostile filesystem: one byte per call
+            return attempt;
+        });
     EXPECT_EQ(outcome.error, StorageError::none);
     EXPECT_EQ(outcome.transferred, buffer.size());
     ASSERT_EQ(offsets.size(), buffer.size());
@@ -86,20 +89,19 @@ TEST(IoAllTest, LoopsOverPartialWrites) {
 TEST(IoAllTest, RetriesInterruptedCallsAtTheSameOffset) {
     int calls = 0;
     const IoOutcome outcome =
-        io_all(0, 8, kWrite,
-               [&calls](FileOffset offset, std::size_t remaining) {
-                   ++calls;
-                   IoAttempt attempt;
-                   if (calls <= 2) {
-                       attempt.failed = true;
-                       attempt.retryable = true;
-                       attempt.platform_code = 4; // EINTR on Linux
-                       return attempt;
-                   }
-                   EXPECT_EQ(offset, 0);
-                   attempt.bytes = remaining;
-                   return attempt;
-               });
+        io_all(0, 8, kWrite, [&calls](FileOffset offset, std::size_t remaining) {
+            ++calls;
+            IoAttempt attempt;
+            if (calls <= 2) {
+                attempt.failed = true;
+                attempt.retryable = true;
+                attempt.platform_code = 4; // EINTR on Linux
+                return attempt;
+            }
+            EXPECT_EQ(offset, 0);
+            attempt.bytes = remaining;
+            return attempt;
+        });
     EXPECT_EQ(outcome.error, StorageError::none);
     EXPECT_EQ(outcome.transferred, 8);
     EXPECT_EQ(calls, 3);
@@ -107,15 +109,14 @@ TEST(IoAllTest, RetriesInterruptedCallsAtTheSameOffset) {
 
 TEST(IoAllTest, GivesUpAfterTooManyInterruptions) {
     int calls = 0;
-    const IoOutcome outcome = io_all(0, 8, kWrite,
-                                     [&calls](FileOffset, std::size_t) {
-                                         ++calls;
-                                         IoAttempt attempt;
-                                         attempt.failed = true;
-                                         attempt.retryable = true;
-                                         attempt.platform_code = 4;
-                                         return attempt;
-                                     });
+    const IoOutcome outcome = io_all(0, 8, kWrite, [&calls](FileOffset, std::size_t) {
+        ++calls;
+        IoAttempt attempt;
+        attempt.failed = true;
+        attempt.retryable = true;
+        attempt.platform_code = 4;
+        return attempt;
+    });
     EXPECT_EQ(outcome.error, kWrite);
     EXPECT_EQ(outcome.transferred, 0);
     EXPECT_EQ(outcome.platform_code, 4);
@@ -124,19 +125,18 @@ TEST(IoAllTest, GivesUpAfterTooManyInterruptions) {
 
     // Exactly at the budget the call still succeeds, so the boundary is not off by one.
     calls = 0;
-    const IoOutcome tolerated =
-        io_all(0, 8, kWrite, [&calls](FileOffset, std::size_t remaining) {
-            ++calls;
-            IoAttempt attempt;
-            if (calls <= flowget::detail::kMaxAttemptsWithoutProgress) {
-                attempt.failed = true;
-                attempt.retryable = true;
-                attempt.platform_code = 4;
-                return attempt;
-            }
-            attempt.bytes = remaining;
+    const IoOutcome tolerated = io_all(0, 8, kWrite, [&calls](FileOffset, std::size_t remaining) {
+        ++calls;
+        IoAttempt attempt;
+        if (calls <= flowget::detail::kMaxAttemptsWithoutProgress) {
+            attempt.failed = true;
+            attempt.retryable = true;
+            attempt.platform_code = 4;
             return attempt;
-        });
+        }
+        attempt.bytes = remaining;
+        return attempt;
+    });
     EXPECT_EQ(tolerated.error, StorageError::none);
     EXPECT_EQ(tolerated.transferred, 8);
 }
@@ -226,12 +226,10 @@ TEST(StorageContractTest, ClosedStorageReportsNotOpenBeforeArgumentValidation) {
     std::byte buffer[4] = {};
     std::size_t count = 0;
 
-    // not_open comes first: a caller that never opened the storage must not be told its arguments are
-    // the problem. Argument validation on an open storage is covered by the integration tests.
-    EXPECT_EQ(storage->write_at(-1, buffer, sizeof(buffer), count).error,
-              StorageError::not_open);
-    EXPECT_EQ(storage->read_at(-1, buffer, sizeof(buffer), count).error,
-              StorageError::not_open);
+    // not_open comes first: a caller that never opened the storage must not be told its arguments
+    // are the problem. Argument validation on an open storage is covered by the integration tests.
+    EXPECT_EQ(storage->write_at(-1, buffer, sizeof(buffer), count).error, StorageError::not_open);
+    EXPECT_EQ(storage->read_at(-1, buffer, sizeof(buffer), count).error, StorageError::not_open);
     EXPECT_EQ(storage->write_at(0, nullptr, 4, count).error, StorageError::not_open);
     EXPECT_EQ(storage->preallocate(-1).error, StorageError::not_open);
 }
