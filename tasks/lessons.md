@@ -168,3 +168,52 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
 - Tekrarını önleyen kontrol: pre-commit yine "manifest is not a file" veya `WinError 5` derse, sorunu
   depo/config içinde aramadan önce bu iki ortam değişkeniyle temiz bir önbellek kullan. CI etkilenmez
   (temiz runner).
+
+### 2026-11-15 — CI kırıldı: vcpkg sığ klonunda `builtin-baseline` commit'i yok
+- Belirti: GitHub Actions run #5 (commit `51e7699`), Linux job'u `Configure (debug)` adımında 1 s'de
+  düştü: `error: while checking out baseline from commit '4702e381...', failed to \`git show\`
+  versions/baseline.json` + `fatal: path 'versions/baseline.json' exists on disk, but not in
+  '4702e381...'`. Windows job'u aynı run'da yeşildi. `ci.yml` ve `vcpkg.json` en son `24fe335`'te
+  değişmişti; run #3 (`82cbf88`) ve run #4 (`ab9be99`) yeşildi. Yani kod değişmeden kırıldı.
+- Kök neden: `actions/checkout@v4` yabancı depoyu (microsoft/vcpkg) varsayılan `fetch-depth: 1` ile
+  klonluyor → `vcpkg/` içinde **tek** commit var (o gün master ucu `8f363bd`). `vcpkg.json` ise
+  `builtin-baseline` olarak `4702e38`'i pinliyor; vcpkg bu commit'in ağacından
+  `versions/baseline.json`'ı okuyor. Baseline seçildiği gün (14 Kasım 07:07 UTC) `4702e38` master'ın
+  ucu olduğu için run #3/#4'te klonda hazırdı; master ilerleyince commit sığ klondan düştü. Hata
+  kodda değil, **dış bağımlılığın ucunun kaymasındaydı** — bu yüzden "dün yeşildi bugün kırmızı"
+  göründü. `ci.yml`'deki "Full clone, not shallow" yorumu yanlıştı; klon sığdı. Yerel tekrar: sığ
+  klon (9.4 MB, 1 commit) + `git cat-file -e 4702e38:versions/baseline.json` → aynı
+  "exists on disk, but not in" hatası.
+- Düzeltme: `scripts/fetch_vcpkg_baseline.py` eklendi. SHA'yı `vcpkg.json`'dan okur (tek doğruluk
+  kaynağı), commit yoksa `git fetch --depth=1 origin <sha>` ile yalnız o commit'i çeker,
+  `versions/baseline.json`'ın gerçekten okunabildiğini doğrular ve `GITHUB_OUTPUT`'a `baseline=`
+  yazar. İki job'a da "Fetch pinned vcpkg baseline" adımı bootstrap'ten **önce** eklendi; binary
+  cache anahtarı `vcpkg-<os>-<baseline>-<manifest>` oldu (eski baseline'ın arşivleri geri
+  yüklenmiyor). Tam klon (yüzlerce MB) bilinçli olarak seçilmedi.
+- Tekrarını önleyen kontrol: adım her iki job'da koşuyor ve başarısızsa job kırmızı; baseline
+  bump'ında script kendiliğinden yeni SHA'yı çeker (workflow düzenlemesi gerekmez). Cache anahtarı
+  baseline içerdiği için eski arşivler sessizce kullanılmaz. Yerel doğrulama: sığ klonda aynı hata
+  üretildi, script sonrası `git show 4702e38:versions/baseline.json` okunabildi; ikinci koşu
+  "already present" ile 0 döndü; uydurma SHA / eksik manifest / olmayan dizin → exit 1 + net mesaj.
+
+### 2026-11-15 — "CMAKE_MAKE_PROGRAM is not set" vcpkg hatasının sonucu değil, ayrı bir koşul
+- Belirti: Linux logunda iki mesaj birlikte: vcpkg baseline hatası ve "CMake was unable to find a
+  build program corresponding to Ninja. CMAKE_MAKE_PROGRAM is not set." Soru: ikincisi ilkinin
+  sonucu mu? Yanıt: **hayır**, ayrı bir koşul — ama ikisi aynı configure çıktısında görünebilir.
+- Kök neden (tespit): CMake sırası ölçüldü — vcpkg install (`project()` içindeki toolchain) **önce**
+  çalışır, üretecin make programını bulma **sonra**. vcpkg hatası configure'ı hemen bitirmiyor;
+  CMake üretim adımına geçip ninja'yı arıyor ve o da yoksa ikinci hatayı yazıyor. Yerel deney:
+  bozuk baseline + PATH'te ninja yok → aynı çıktıda **iki mesaj birlikte**; bozuk baseline + ninja
+  var → yalnız vcpkg hatası. Yani Ninja satırı vcpkg'ın türevi değil, o configure'da CMake'in
+  ninja'yı çözemediğini gösteren bağımsız bir koşul. CI'da `ninja-build` apt adımında kurulu ve o
+  adım run #5'te `success`; run #3/#4 aynı `apt-get` satırı ve aynı presetlerle Ninja kullanarak
+  derledi. Run #5'in anonim logu kapalı ("Sign in to view logs") olduğu için o koşuda ninja'nın
+  neden çözülemediği kanıtlanamadı; en olası kaynak, aynı mesajı **yerelde** üreten durum: düz
+  PowerShell'de `cmake`/`ninja` PATH'te yok (VS'in CMake'i yalnız kendi dizininde), `cmake --preset`
+  çağrısı vcvars olmadan aynı satırı veriyor.
+- Düzeltme: Linux toolchain adımına `ninja --version` eklendi; üreteç eksikse hata configure'ın
+  ortasında değil, kurulum adımında ve açık mesajla çıkar. Yerelde build için VS geliştirici
+  ortamı (`vcvars64.bat`) + VS'in Ninja dizini PATH'e eklenmeli.
+- Tekrarını önleyen kontrol: `ninja --version` çıktısı her koşuda logda; configure'daki
+  "CMAKE_MAKE_PROGRAM" metni bundan sonra doğrudan üreteç/ortam eksiğine işaret eder, vcpkg
+  hatasıyla karıştırılmaz.

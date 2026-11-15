@@ -16,7 +16,7 @@ env:
   CTEST_OUTPUT_ON_FAILURE: 1
   VCPKG_ROOT: ${{ github.workspace }}/vcpkg
   # Filesystem binary cache: a cold run builds curl/OpenSSL/SQLite/spdlog once, later runs extract
-  # archives instead. Keyed by the manifest, which pins the vcpkg registry baseline.
+  # archives instead. Steps key this directory on the pinned registry baseline plus the manifest.
   VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/.vcpkg-cache,readwrite
 
 jobs:
@@ -35,24 +35,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Full clone, not shallow: the manifest pins `builtin-baseline`, and vcpkg must be able to
-      # resolve that commit even after the vcpkg repository has moved on.
+      # actions/checkout clones a foreign repository with depth 1, so `vcpkg` holds a single
+      # commit (the tip of master) while vcpkg.json pins `builtin-baseline` to an older one.
+      # vcpkg needs the pinned commit's tree to read versions/baseline.json; without it, install
+      # fails with "failed to `git show` versions/baseline.json". The next step fetches exactly
+      # that commit (cheaper than a full vcpkg clone) and publishes its SHA for the cache key.
       - name: Check out vcpkg
         uses: actions/checkout@v4
         with:
           repository: microsoft/vcpkg
           path: vcpkg
 
+      - name: Fetch pinned vcpkg baseline
+        id: vcpkg-baseline
+        run: py scripts/fetch_vcpkg_baseline.py
+
       - name: Bootstrap vcpkg
         shell: cmd
         run: vcpkg\bootstrap-vcpkg.bat -disableMetrics
 
+      # Keyed by runner + baseline + manifest: archives built against a different baseline must
+      # not be restored, or a baseline bump silently reuses stale packages.
       - name: Cache vcpkg binary archives
         uses: actions/cache@v4
         with:
           path: .vcpkg-cache
-          key: vcpkg-windows-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-windows-
+          key: vcpkg-windows-${{ steps.vcpkg-baseline.outputs.baseline }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-windows-${{ steps.vcpkg-baseline.outputs.baseline }}-
 
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -84,13 +93,24 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install toolchain
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang clang-tidy curl zip unzip tar
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang clang-tidy curl zip unzip tar
+          # Named explicitly so a missing generator fails here with a clear message instead of
+          # surfacing as "CMAKE_MAKE_PROGRAM is not set" inside a later configure step.
+          ninja --version
 
+      # Depth-1 clone: fetch the pinned baseline commit, same as the Windows job. See the comment
+      # there for the failure this prevents.
       - name: Check out vcpkg
         uses: actions/checkout@v4
         with:
           repository: microsoft/vcpkg
           path: vcpkg
+
+      - name: Fetch pinned vcpkg baseline
+        id: vcpkg-baseline
+        run: python3 scripts/fetch_vcpkg_baseline.py
 
       - name: Bootstrap vcpkg
         run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
@@ -99,8 +119,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .vcpkg-cache
-          key: vcpkg-linux-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-linux-
+          key: vcpkg-linux-${{ steps.vcpkg-baseline.outputs.baseline }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-linux-${{ steps.vcpkg-baseline.outputs.baseline }}-
 
       - name: Cache FetchContent dependencies
         uses: actions/cache@v4

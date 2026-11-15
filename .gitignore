@@ -26,6 +26,9 @@ compile_commands.json
 /.vcpkg-cache/
 vcpkg_installed/
 
+# Python tooling (scripts/): bytecode from local runs, never committed
+__pycache__/
+
 # Test / runtime artifacts
 /tmp/
 /tests/tmp/
