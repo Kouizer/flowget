@@ -9,6 +9,7 @@ add_library(
     src/http_filename.cpp
     src/probe.cpp
     src/segment_planner.cpp
+    src/sha256.cpp
     src/download.cpp
     src/single_stream_download.cpp
     src/storage.cpp)

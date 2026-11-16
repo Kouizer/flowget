@@ -26,6 +26,7 @@ add_executable(flowget_unit_tests
                unit/probe_parsing_test.cpp
                unit/storage_test.cpp
                unit/segment_planner_test.cpp
+               unit/sha256_test.cpp
 )
 target_link_libraries(flowget_unit_tests PRIVATE FlowGet::core GTest::gtest_main)
 
