@@ -9,8 +9,8 @@
     1. Mirror the Windows checkout into the WSL clone (~/flowget) with rsync. `build/` and `.git/`
        are excluded on both ends: the WSL side keeps its CMake/vcpkg/FetchContent caches and its
        own Git metadata, so a sync never throws away a warm build tree.
-    2. Run `linux-x64` (debug) and `linux-x64-asan` (sanitizers) configure, build and ctest through
-       `wsl -d Ubuntu -- bash -lc`.
+    2. Run `linux-x64` (debug), `linux-x64-asan` (ASan/UBSan) and `linux-x64-tsan` (ThreadSanitizer)
+       configure, build and ctest through `wsl -d Ubuntu -- bash -lc`.
 
     Why bother: MSVC and Clang reject different code with -Werror on. Diagnostics such as
     -Wunused-lambda-capture or -Wsign-conversion are Clang-only, so a green Windows build says
@@ -150,7 +150,7 @@ mkdir -p ~/flowget
 rsync -a --checksum --delete --exclude /build/ --exclude /.git/ '$source/' ~/flowget/
 "@
 
-    Write-Host '==> linux-x64 (debug) + linux-x64-asan (sanitizers)' -ForegroundColor Cyan
+    Write-Host '==> linux-x64 (debug) + linux-x64-asan (ASan/UBSan) + linux-x64-tsan (TSan)' -ForegroundColor Cyan
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
     Invoke-WslScript -FailureMessage 'Linux build/test failed - see the log above' -Script @'
 set -e
@@ -177,7 +177,14 @@ cmake --build --preset linux-x64-asan
 echo '=== linux-x64-asan: ctest ==='
 ctest --test-dir build/linux-x64-asan --output-on-failure
 
-echo 'Linux presets OK: linux-x64 (debug) and linux-x64-asan (ASan + UBSan)'
+echo '=== linux-x64-tsan: configure ==='
+cmake --preset linux-x64-tsan
+echo '=== linux-x64-tsan: build ==='
+cmake --build --preset linux-x64-tsan
+echo '=== linux-x64-tsan: ctest ==='
+ctest --test-dir build/linux-x64-tsan --output-on-failure
+
+echo 'Linux presets OK: linux-x64 (debug), linux-x64-asan (ASan + UBSan) and linux-x64-tsan (TSan)'
 '@
     $watch.Stop()
 
