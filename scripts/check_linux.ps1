@@ -21,10 +21,15 @@
     * `bash -lc` is a *login* shell and does not read ~/.bashrc, so FLOWGET_VCPKG_ROOT exported
       there is invisible. The script exports it (unless the caller already set it) before
       configuring, otherwise CMake stops with "No vcpkg root found".
-    * The remote script is normalised to LF before it reaches bash. A CRLF script makes bash pass
+    * Each stage is written to a temporary file and run as `bash <file>`. Passing it as one
+      `bash -lc "<script>"` argument looked natural but silently broke: PowerShell 5.1 does not
+      escape embedded double quotes for native commands and wsl.exe re-splits the command line, so
+      bash received only the first word (`set`) and every stage exited 0 without doing anything - a
+      green result for no work. A file removes the quoting layer entirely.
+    * The temporary script is normalised to LF before it reaches bash. A CRLF script makes bash pass
       `linux-x64\r` to `cmake --preset`, which fails with a misleading "unknown preset" error.
-    * wsl.exe joins the remaining argv into one command line, so each remote script is handed over
-      as a single argument wrapped in double quotes; without that bash only sees the first word.
+    * The temporary script file is passed last on the command line as a single plain path; there is
+      no wrapper quoting to get wrong.
     * rsync compares content (--checksum), not size/mtime: WSL's drvfs layer was seen serving a
       just-updated timestamp stale, which made rsync skip a fresh edit while ninja then reported
       "no work to do" - a green result for old sources. mtimes still propagate from the source
@@ -53,6 +58,22 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 
+# wsl.exe strips backslashes from arguments before the Linux side sees them (observed as
+# "C:UsersEnesAppData..." reaching wslpath), so Windows -> /mnt/<drive> translation is done here
+# instead of shelling out to wslpath. The script only ever deals with local temp/repo paths.
+function ConvertTo-WslPath {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $WindowsPath)
+
+    $full = [System.IO.Path]::GetFullPath($WindowsPath)
+    if ($full -notmatch '^([A-Za-z]):\\(.*)$') {
+        throw "'$WindowsPath' is not an absolute local path"
+    }
+    $drive = $Matches[1].ToLowerInvariant()
+    $rest = $Matches[2] -replace '\\', '/'
+    "/mnt/$drive/$rest"
+}
+
 function Invoke-WslScript {
     [CmdletBinding()]
     param(
@@ -60,18 +81,31 @@ function Invoke-WslScript {
         [Parameter(Mandatory)] [string] $FailureMessage
     )
 
-    # Normalise line endings: the file may be checked out as CRLF (.gitattributes) and bash would
-    # treat the trailing CR as part of the last word on every line.
+    # The script is written to a temporary file and executed with `bash <file>` instead of being
+    # passed as one `bash -lc "<script>"` argument. A multi-line argument containing double quotes
+    # is split by PowerShell 5.1's native-command quoting and by wsl.exe's argv handling: bash then
+    # receives only the first word ("set") and the whole stage silently does nothing while still
+    # exiting 0 - a false green. A file has no quoting layer at all.
     $normalized = $Script -replace "`r`n", "`n"
+    $scriptFile = Join-Path ([System.IO.Path]::GetTempPath()) `
+        ("flowget-check-" + [guid]::NewGuid().ToString('N') + ".sh")
+    [System.IO.File]::WriteAllText($scriptFile, $normalized, [System.Text.UTF8Encoding]::new($false))
 
-    # cmake and ctest report progress on stderr. Windows PowerShell 5.1 turns native stderr writes
-    # into a terminating NativeCommandError when the preference variable is `Stop`, which would
-    # abort a perfectly healthy build, so the native call runs in `Continue` scope.
-    $ErrorActionPreference = 'Continue'
-    & wsl -d $Distro -- bash -lc "`"$normalized`""
-    $status = $LASTEXITCODE
-    if ($status -ne 0) {
-        throw "$FailureMessage (exit code $status)"
+    try {
+        $linuxPath = ConvertTo-WslPath $scriptFile
+
+        # cmake and ctest report progress on stderr. Windows PowerShell 5.1 turns native stderr
+        # writes into a terminating NativeCommandError when the preference variable is `Stop`, which
+        # would abort a perfectly healthy build, so the native call runs in `Continue` scope.
+        $ErrorActionPreference = 'Continue'
+        & wsl -d $Distro -- bash $linuxPath
+        $status = $LASTEXITCODE
+        if ($status -ne 0) {
+            throw "$FailureMessage (exit code $status)"
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $scriptFile -ErrorAction SilentlyContinue
     }
 }
 
@@ -95,7 +129,7 @@ echo "clang++: $(clang++ --version | head -n 1)"
 echo "ninja:   $(ninja --version)"
 '@
 
-    $source = (& wsl -d $Distro -- bash -lc "`"wslpath -a '$repoRoot'`"").Trim()
+    $source = ConvertTo-WslPath $repoRoot
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($source)) {
         throw "wslpath could not translate '$repoRoot' to a Linux path"
     }
@@ -110,7 +144,10 @@ mkdir -p ~/flowget
 # result for old sources. Comparing content removes that failure mode. mtimes still come from the
 # source (-a implies -t) so ninja rebuilds exactly the files that were transferred; do not add
 # --no-times here, it updates content but leaves the old destination mtime and ninja skips it.
-rsync -a --checksum --delete --exclude /build/ --exclude /.git/ '$source' ~/flowget/
+# The trailing slash on '$source/' is load-bearing: without it rsync copies the directory itself
+# into ~/flowget/flowget and the build tree keeps testing November sources while every stage exits
+# 0 (observed on 2026-11-16, see tasks/lessons.md).
+rsync -a --checksum --delete --exclude /build/ --exclude /.git/ '$source/' ~/flowget/
 "@
 
     Write-Host '==> linux-x64 (debug) + linux-x64-asan (sanitizers)' -ForegroundColor Cyan

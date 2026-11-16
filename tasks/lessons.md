@@ -259,6 +259,27 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
   (Clang) yakalar; yerel makinede Clang yok, bu yüzden yerel MSVC build'i tek başına yeterli kanıt
   sayılmaz.
 
+### 2026-11-16 — WSL doğrulama betiği iki katmanda sahte yeşil üretiyordu
+- Belirti: `scripts/check_linux.ps1` her koşuda "PASSED" veriyordu ama WSL tarafında yeni eklenen
+  `core/src/download.cpp` hiç görünmüyordu; `ninja: no work to do` ve `ctest 2/2` çıktısı 14 Kasım
+  kaynaklarına aitti. Ayrıca her aşamada bash `set` komutunun ortam dökümünü basıyordu
+  (`BASH_EXECUTION_STRING=set`) ve betik yine de exit 0 dönüyordu.
+- Kök neden (a): rsync kaynağı `'$source'` (sonda `/` yok) veriliyordu. Bu durumda rsync dizini
+  hedefin **içine** kopyalar (`~/flowget/flowget/...`); `--delete` de bu ağacı meşru sandığı için
+  hiçbir şey silinmiyor, gerçek `~/flowget` ağacı hiç güncellenmiyordu. Yani build, aylık eski
+  kaynakları test ediyordu.
+- Kök neden (b): çok satırlı script `bash -lc "<script>"` biçiminde tek argüman olarak geçiriliyordu.
+  PowerShell 5.1 native komutlarda gömülü çift tırnakları kaçırmıyor; wsl.exe de komut satırını
+  yeniden bölüyor. Sonuç: bash'in `-c` argümanı yalnızca ilk kelime (`set`) oluyor, ortam dökümü
+  basılıyor ve süreç 0 ile dönüyor. Yani "yeşil" çıktı hiçbir iş yapılmadan üretiliyordu.
+- Düzeltme: rsync kaynağının sonuna `/` eklendi. Her aşama LF'e normalize edilip geçici bir dosyaya
+  yazılıyor ve `wsl -d <distro> -- bash /mnt/.../script.sh` ile koşuyor; böylece tırnak/argüman
+  katmanı tamamen kalktı. Windows→WSL yol çevrimi `wslpath` yerine PowerShell'de yapılıyor, çünkü
+  wsl.exe argümandaki ters bölüleri yiyor (`C:\Users\...` → `C:Users...`).
+- Tekrarını önleyen kontrol: betik çıktısında gerçek derleme satırları (`Building CXX ... .o`)
+  görünmeli; "ninja: no work to do" tek başına yeşil sayılmaz. Yeni dosya eklenen her dilimde WSL
+  tarafında `ls ~/flowget/<yeni dosya>` ile senkronizasyon ayrıca doğrulanır.
+
 ### 2026-11-15 — Linux derleme hataları ancak push sonrası CI'da ortaya çıkıyordu
 - Belirti: Yerelde MSVC build + `ctest` yeşil ve `pre-commit` temiz olduğu hâlde push sonrası Linux
   job'u kırmızı döndü (örnek: `-Wunused-lambda-capture`). Her tur push → CI bekleme → düzeltme
