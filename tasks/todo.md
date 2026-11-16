@@ -62,7 +62,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S1a | vcpkg manifesti (curl, openssl, sqlite3, spdlog) + toolchain/CI + GPL denylist betiği | **TAMAMLANDI** |
 | S1b | `HttpClient` + tek bağlantılı indirme + yerel test HTTP sunucusu | **TAMAMLANDI** |
 | S2 | Probe (HEAD / `Range: bytes=0-0`, 206/200/416, metadata) | **TAMAMLANDI** |
-| S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** (yerel; Linux CI push sonrası) |
+| S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | |
 | S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | |
 | S6 | `RetryPolicy` + `RateLimiter` | |
@@ -144,7 +144,7 @@ girdisi.
 4. `416` taşıma katmanında `http_status` olarak görünür (4xx genel kuralı); probe bu tek durumu
    anlamlı sonuç sayar — S5'te sidecar doğrulaması da aynı ayrımı kullanacak.
 
-### S3 — IStorage + preallocate + pwrite — **TAMAMLANDI** (yerel; Linux CI push sonrası doğrulanacak)
+### S3 — IStorage + preallocate + pwrite — **TAMAMLANDI**
 
 **Hedef:** S4'ün ihtiyacı olan dosya katmanı: aynı dosyaya 8 işçi farklı offset'lerden yazar; yol UTF-8
 (Windows'ta UTF-16'ya çevrilir); ön tahsis isteğe bağlıdır ve başarısızlığı indirmeyi sessizce bozmaz.
@@ -246,7 +246,7 @@ girdisi.
   ASan/UBSan sonucu push sonrası CI'da doğrulanacak; bu açıkça raporlanacak.
 
 **DoD:** yukarıdaki testler yeşil, `-Werror` temiz, clang-format temiz, ASCII olmayan yolda round-trip
-kanıtlı, Linux CI yeşili (push sonrası).
+kanıtlı, Linux CI yeşili (run #8).
 
 **Kanıt (yerel, MSVC 19.52 / CMake 4.3.1, 2026-11-15):** commit `f7170b5`. `/W4 /WX` build temiz
 (uyarı yok); `ctest` 2/2: **39 birim + 30 entegrasyon = 69 test** (S3 öncesi 42).
@@ -276,6 +276,11 @@ kilitliyor (`tasks/lessons.md`).
 > `linux-x64-asan` (ASan/UBSan) için configure + build + `ctest` çalıştırıyor; iki preset için de
 > `2/2 tests passed` (Clang 21.1.8, cmake 4.2.3). `AGENTS.md`'deki "Linux derlemesi yerelde
 > doğrulanamaz" kuralı bu nedenle güncellendi; arka plan `tasks/lessons.md` (2026-11-15).
+
+**Kanıt (CI, 2026-11-15):** GitHub Actions run #8, commit `b180dc0` — Windows (MSVC), Linux
+(Clang, ASan/UBSan) ve `policy` job'larının üçü de yeşil. Linux job'u `PosixStorage`'ı
+`-Wconversion -Wsign-conversion -Werror` ile derledi ve ASan/UBSan `ctest`'ini koşturdu; böylece
+"Linux CI push sonrası doğrulanacak" notu kapandı.
 
 ### Tasarım
 - [ ] **S4'ün ilk maddesi:** `SingleStreamDownloader`'ı `IStorage`'a taşı, ASCII olmayan hedef yolla test
