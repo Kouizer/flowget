@@ -63,7 +63,8 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S1b | `HttpClient` + tek bağlantılı indirme + yerel test HTTP sunucusu | **TAMAMLANDI** |
 | S2 | Probe (HEAD / `Range: bytes=0-0`, 206/200/416, metadata) | **TAMAMLANDI** |
 | S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** |
-| S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | |
+| S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | **PLAN ONAYLI** |
+| S4b | clang-tidy temizliği (S4 sonrası; entegrasyon ve `--warnings-as-errors`) | |
 | S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | |
 | S6 | `RetryPolicy` + `RateLimiter` | |
 | S7 | `DynamicSplitter` + benchmark tablosu | |
@@ -281,6 +282,156 @@ kilitliyor (`tasks/lessons.md`).
 (Clang, ASan/UBSan) ve `policy` job'larının üçü de yeşil. Linux job'u `PosixStorage`'ı
 `-Wconversion -Wsign-conversion -Werror` ile derledi ve ASan/UBSan `ctest`'ini koşturdu; böylece
 "Linux CI push sonrası doğrulanacak" notu kapandı.
+
+### S4 — SegmentPlanner + curl multi, çok parçalı indirme, tek akışa düşüş — **PLAN ONAYLI (2026-11-16)**
+
+**Hedef:** `flowget-cli get <url> -o out.bin --connections 8` tek dosyayı N aralığa bölüp aynı anda
+indirir; sunucu/aralık koşulları sağlanmazsa **bir kez** tek akışa düşer. Motor tek iş parçacığında
+`curl_multi` sürer (thread-per-segment yok, ADR-0001).
+
+**Onaylanan kararlar (kullanıcı, 2026-11-16)**
+1. `--connections` varsayılan **8**, geçerli aralık **1..64**. N=1: **probe yok**, doğrudan tek akış.
+   (architecture-review §2.1'deki "üst sınır 16" notu bu kararla geçersiz; 64 üst sınırı bilinçli,
+   S6/S7 adaptif düşürmeyi getirecek.)
+2. `DownloadOptions::output_path` **UTF-8 `std::string`** (`std::filesystem::path` değil); Windows
+   CLI'da `wmain` + UTF-8 dönüşümü bu dilime dahil.
+3. **Tek akışa düşüş** (multi iptal → kısmi dosya sil → baştan tek akış, yalnız bir kez):
+   probe `ignored`; `Content-Length` yok/bilinmiyor; dosya küçük (plan < 2 segment); segment yanıtı
+   `200`; `Content-Range` uyuşmazlığı; `Content-Length` uyuşmazlığı; probe `ETag` ile segment `ETag`
+   uyuşmazlığı; yazılan bayt sayısı segment uzunluğundan farklı.
+4. **Taşıma hatası** (`CURLE_PARTIAL_FILE`, `recv`, `connect`, timeout) → **hata**: kısmi dosya silinir,
+   tek akışa düşülmez (yeniden deneme S6). Disk/`IStorage` hatası da hatadır, fallback değil.
+5. Keep-alive testi S5'e ertelendi; ayarlar (`CURLOPT_TCP_KEEPALIVE`) kodda uygulanır.
+
+**Ek istekler (onaylandı) ve çözüm**
+- **a) Ayrı iptal watcher thread'i yok.** Motor döngüsü çağıran thread'de döner; her turda iptal
+  jetonunu okur ve `curl_multi_poll`u **50 ms** zaman aşımıyla bekler → en kötü iptal gecikmesi ~50 ms
+  (S1b taşımasındaki sınırla aynı). `curl_multi_wakeup` yalnız *başka* bir thread'den multi'yi
+  uyandırmak içindir; tek sürücü thread varken ek thread açmak gereksiz karmaşıklık olur.
+  `CURLOPT_XFERINFOFUNCTION` de jetonu okur (tek bir yazma aralığı uzun sürse bile).
+- **b)** `linux-x64-tsan` configure/build/test preset'i (ThreadSanitizer) eklendi;
+  `scripts/check_linux.ps1` `linux-x64`, `linux-x64-asan`, `linux-x64-tsan` üçünü koşar. CI'a ekleme
+  ayrı iş (bu dilimde değil).
+- **c)** SHA-256 yardımcısı `core/` içinde: `flowget/sha256.h` + `core/src/sha256.cpp`, OpenSSL EVP,
+  akışlı (`update`/`hex_digest`). S8 `HashVerifier`'ın tabanı; `tests/support`'a yazılmaz.
+- **d)** `CURLOPT_BUFFERSIZE = 256 KiB` (ortak curl ayarlarında). Disk yazımı motor thread'inde kalır;
+  S7 benchmark'ına not: 256 KiB tamponla ağ hızı vs `pwrite` gecikmesi ölçülecek, darboğaz çıkarsa
+  tek yazıcı thread + segment kuyruğu (architecture-review §2.3) değerlendirilecek.
+- **e) İlk madde:** `SingleStreamDownloader` `IStorage`'a taşınır ve ASCII olmayan hedef yolla test
+  edilir (`ifstream(path)` ANSI tuzağına düşmemek için doğrulama `IStorage::read_at` ile yapılır).
+- **f)** clang-tidy temizliği S4'e **dahil değil**; aşağıdaki **S4b** dilimi.
+
+**Mimari**
+- **`SegmentPlanner`** (saf fonksiyon): `minimum_segment_size(total) = max(1 MiB, total/64)`;
+  segment sayısı `clamp(connections, 1, total / min_segment_size)`; ilk `total % count` segment bir
+  bayt uzun. Aralıklar bitişik, boşluksuz, toplam == boyut; `total == 0` → boş plan.
+- **Motor** (`core/src/segmented_download.cpp`) libcurl multi'yi **doğrudan** sürer. Gerekçe:
+  uyuşmazlık başlık aşamasında görülünce gövdeyi tüketmeden tüm multi iptal edilmeli; `HttpTransport::
+  get()` tek istek, senkron arayüzü bunu ifade edemez. Easy-handle ortak ayarları
+  `core/src/curl_common.h`'a taşınır; `curl_transport.cpp` da onu kullanır (iki kopya drift etmez).
+- **`HttpRequest::range_start` / `range_length`** (curl `CURLOPT_RANGE`; `length < 0` → `a-`).
+  Aralık isteği varsa HTTP/1.1 zorlanır + `CURLOPT_PIPELINING = 0` (HTTP/2 multiplexing tüm segmentleri
+  tek TCP'ye bindirir); `CURLMOPT_MAX_HOST_CONNECTIONS = CURLMOPT_MAX_TOTAL_CONNECTIONS = connections`
+  (varsayılan 6 tuzağı).
+- **Başlık doğrulaması başlık callback'inde** (boş satır = başlık sonu): durum `206`; `Content-Range`
+  `first/last/total` planlanan aralık ve probe boyutuyla aynı; `Content-Length` **varsa** segment
+  uzunluğuna eşit (yoksa gövde sonu bayt sayacı belirler — RFC 9110 eksikliğe izin verir); iki tarafta
+  da doluysa `ETag` probe ile aynı. Uyuşmazlık → o transfer `CURLE_WRITE_ERROR` ile iptal edilir,
+  nedeni kaydedilir, motor kalanları da durdurur → **fallback**.
+- **Gövde:** `write_at(segment.offset + written, data, size)`. Bitişte `written == length` değilse
+  bayt sayısı uyuşmazlığı → fallback. `IStorage` hatası → fatal (fallback yok).
+- **İstek başlıkları:** `If-Range: <ETag>` yalnız probe ETag'i doluysa; `Accept-Encoding: identity`;
+  `CURLOPT_BUFFERSIZE` 256 KiB; TCP keepalive; user-agent + `DownloadOptions::headers`.
+- **Dosya akışı:** probe → plan → üst dizini oluştur → `open(read_write_truncate)` →
+  `preallocate(size)` (`preallocate_unsupported` → uyarı, devam; fatal → hata) → motor → `flush` →
+  `close`. Fallback/hata yolunda `close` + dosya silme. `open` UTF-8 yolu
+  `std::filesystem::path(u8string)` ile kurar (ANSI tuzağı yok).
+- **Özet:** `DownloadSummary{http, bytes_written, message, connections, fallback, fallback_reason}`.
+  Segmentli başarıda `http.response` probe metadata'sından sentezlenir (`status = 206`,
+  `content_length = boyut`, etag/effective_url probe'dan). Boş kaynak (`bytes */0`): HTTP isteği yok,
+  boş dosya oluşturulur (`bytes_written = 0`, `connections = 0`).
+- **`Downloader`** tek giriş noktası: `connections == 1` → probe'suz tek akış; aksi halde probe +
+  segmentli deneme. CLI `Downloader` kullanır; `SingleStreamDownloader` fallback olarak kalır.
+
+**Dosyalar**
+- [ ] `core/include/flowget/segment_planner.h`, `core/src/segment_planner.cpp`
+- [ ] `core/include/flowget/download.h` — ortak `DownloadOptions` / `DownloadProgress` /
+      `DownloadSummary` / `ProgressCallback` tipleri (UTF-8 yol, `connections`, `headers`)
+- [ ] `core/include/flowget/downloader.h`, `core/src/downloader.cpp` — probe → plan → motor → fallback
+- [ ] `core/src/curl_common.h` — RAII handle'lar, global init, hata eşlemesi, ortak easy ayarları,
+      başlık toplayıcı (256 KiB tampon, HTTP/1.1 + no pipelining aralıkta)
+- [ ] `core/src/segmented_download.h/.cpp` — çok segmentli motor (başlık doğrulaması, iptal, ilerleme)
+- [ ] `core/include/flowget/sha256.h`, `core/src/sha256.cpp` — akışlı SHA-256 (OpenSSL EVP)
+- [ ] `core/src/download_util.h` — UTF-8 yol → `std::filesystem::path`, üst dizin oluşturma
+- [ ] `core/src/single_stream_download.cpp` — `IStorage`'a geçiş (S4'ün ilk maddesi)
+- [ ] `core/src/curl_transport.cpp` — ortak `curl_common.h` kullanımı + `range_start/length`
+- [ ] `cli/src/main.cpp` — `wmain` + UTF-8 argv dönüşümü, konsol çıkışı UTF-8, `--connections`,
+      `--header`, `Downloader` kullanımı, fallback notu
+- [ ] `CMakePresets.json` + `scripts/check_linux.ps1` — `linux-x64-tsan` preset'i ve üç preset koşusu
+- [ ] `tests/support/http_test_server.{h,cpp}` — `omit_content_length`, `content_length_override`,
+      `content_range_override` (uyuşmazlık senaryoları)
+- [ ] `tests/unit/segment_planner_test.cpp`, `tests/unit/sha256_test.cpp`
+- [ ] `tests/integration/segmented_download_test.cpp`; `single_stream_download_test.cpp` güncellemesi
+      (UTF-8 `std::string` yol + ASCII olmayan hedef)
+- [ ] `tests/CMakeLists.txt`, `core/CMakeLists.txt` — yeni kaynaklar/hedefler
+
+**Testler**
+- Birim (planner): 100 MiB/8 → bitişik, boşluksuz, toplam == boyut; boyutlar farkı ≤ 1; `0` → boş;
+  `connections < 1` / `> 64` kırpma; `connections` > olası segment sayısı → daha az segment; tam
+  bölünen/bölünmeyen/asal boyutlar; 1 GiB/64; `int64` sınırına yakın boyutta taşma yok.
+- Birim (SHA-256): boş giriş, `"abc"`, 1 MiB tek seferde vs rastgele parçalarla akışlı (aynı özet);
+  bilinen NIST vektörleri.
+- Entegrasyon (yerel sunucu, gerçek dosya):
+  - 8 MiB, `connections=4` → içerik birebir, boyut doğru, `fallback == false`, sunucuya ≥ 5 istek
+    (HEAD + probe + 4 segment).
+  - `connections=1` → **probe yok**: sunucuya tek GET (request_count == 1), içerik doğru.
+  - Range'i yok sayan sunucu → tek akışa düşer (`fallback == true`), içerik doğru.
+  - Segment yanıtı `200` (yalnız probe aralığına 206) → fallback, içerik doğru; gövde tüketilmeden
+    iptal edildiği için indirilen bayt toplamı dosya boyutundan küçük kalır.
+  - `Content-Range` uyuşmazlığı → fallback, içerik doğru.
+  - `Content-Length` uyuşmazlığı → fallback, içerik doğru.
+  - `Content-Length` yok + kısa gövde → bayt sayısı uyuşmazlığı → fallback, içerik doğru.
+  - probe sonrası `ETag` değişimi → fallback, içerik doğru (sessiz bozulma yok).
+  - Segmentte kopan bağlantı → **hata**, kısmi dosya yok, fallback yok.
+  - Throttle'lı sunucuda iptal → `aborted`, kısmi dosya yok, < 5 s'de dönüş.
+  - Boş kaynak (0 bayt) → boş dosya, `bytes_written == 0`.
+  - Mevcut büyük dosyanın üzerine indirme → truncate, içerik birebir.
+  - ASCII olmayan hedef (`İndirilenler/İndirilen_çğış.bin`) → tek akış ve segmentli yollar; içerik
+    `IStorage::read_at` ile doğrulanır.
+- Yerel kanıt: `ctest` (birim + entegrasyon) yeşil, `pre_commit run --all-files` temiz,
+  `scripts/check_linux.ps1` üç preset için `exit 0`.
+- CLI e2e: yerel sunucudan 8 MiB indirme, kaynak/hedef SHA-256 aynı; `--connections 0` / `65` → `exit=2`;
+  ASCII olmayan hedef yolla indirme.
+
+**Riskler / tuzaklar**
+- `CURLMOPT_MAX_HOST_CONNECTIONS` varsayılanı 6 → açıkça yükseltilmezse 8 segment 6 bağlantıya biner.
+- HTTP/2 multiplexing → aralık isteklerinde HTTP/1.1 + pipelining kapalı.
+- `CURLOPT_RANGE` + `Content-Encoding` → `identity` şart (gzip offsetleri kaydırır).
+- libcurl `curl_multi_poll` 50 ms: iptal gecikmesi kabul edilebilir; CPU boşta ~0.
+- Eşik altı dosyalar (≈2 MiB'dan küçük) hep tek akış — segmentasyon kazancı yok, doğru davranış.
+- Fallback yalnız **bir kez**; ikinci denemede de uyuşmazlık olursa hata (sonsuz döngü yok).
+- TSan, libcurl/OpenSSL'in kendi içindeki yarışları göremez (instrument edilmemiş); bizim kod
+  (depolama, iptal, motor durumu) taranır.
+
+**DoD:** Yukarıdaki testler yeşil; `-Werror` + clang-format temiz; `check_linux.ps1` (debug, ASan/UBSan,
+TSan) `exit 0`; CLI e2e hash eşleşmesi; fallback/hata sınıfları testlerle kilitli.
+
+**Kanıt (doldurulacak):** commit'ler, `ctest` sayıları, `check_linux.ps1` özeti, CLI e2e SHA-256.
+
+### S4b — clang-tidy temizliği (S4 sonrası, ayrı dilim)
+
+**Neden ayrı:** S4 boyunca clang-tidy uyarı modunda kalır; kodun şekli otursun, sonra tek geçişte
+bulgular düzeltilsin. Karışık commit (davranış + stil) review'u zorlaştırır.
+
+- [ ] Dosya listesi `build/windows-x64/compile_commands.json`'dan üretilir (elle liste yok).
+- [ ] Yerel `const` değişkenler için **k-prefix zorunlu değil**: `readability-identifier-naming.
+      LocalConstantCase` boş bırakılır / `readability-identifier-naming.LocalVariableCase` ile aynı
+      kurala bağlanır (k-prefix yalnız gerçek sabitler/magic değerler için).
+- [ ] `misc-include-cleaner` **kapatılır** (üçüncü parti başlıklar ve platform başlıkları yüzünden
+      gürültülü; IWYU ayrı iş).
+- [ ] Gerçek bulgular düzeltilir (uyarı susturma yok; kök neden).
+- [ ] Sonra CI'da `--warnings-as-errors` açılır ve clang-tidy adımındaki `continue-on-error` kaldırılır.
+- [ ] Kanıt: clang-tidy çıktısı temiz + CI yeşil.
 
 ### Tasarım
 - [ ] **S4'ün ilk maddesi:** `SingleStreamDownloader`'ı `IStorage`'a taşı, ASCII olmayan hedef yolla test
