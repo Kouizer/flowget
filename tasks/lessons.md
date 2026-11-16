@@ -259,6 +259,20 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
   (Clang) yakalar; yerel makinede Clang yok, bu yüzden yerel MSVC build'i tek başına yeterli kanıt
   sayılmaz.
 
+### 2026-11-16 — clang-format her koşuda dosyayı yeniden yazıyordu (satır sonu türevi)
+- Belirti: `pre_commit run --all-files` aynı dosyayı (`tests/unit/segment_planner_test.cpp`)
+  art arda iki koşuda da "files were modified" ile değiştirdi; ilk koşunun çıktısı commit'lendiği
+  hâlde ikinci koşu yeni bir satır kaydırma üretti.
+- Kök neden: `.clang-format`ta `LineEnding` yoktu; LLVM varsayılanı satır sonunu dosyadan türetir.
+  Windows'ta Python `Path.write_text` ile üretilen çalışma kopyası CRLF'ti; clang-format CRLF yazarken
+  tam 100 sütunluk satırları 101 sayıp yeniden kırdı, sonraki koşuda girdi yine CRLF olduğu için
+  farklı bir sonuç üretti. Yani biçimlendirme çıktısı checkout'un satır sonuna bağlıydı.
+- Düzeltme: `.clang-format`a `LineEnding: LF` eklendi; böylece çıktı satır sonundan bağımsız ve
+  deterministik.
+- Tekrarını önleyen kontrol: pre-commit üst üste iki kez koşulur; ikinci koşu hiçbir dosyayı
+  değiştirmemeli. Yeni dosyalar `write` aracıyla (LF) yazılır; Python ile yazarken `newline="\n"`
+  verilir.
+
 ### 2026-11-16 — WSL doğrulama betiği iki katmanda sahte yeşil üretiyordu
 - Belirti: `scripts/check_linux.ps1` her koşuda "PASSED" veriyordu ama WSL tarafında yeni eklenen
   `core/src/download.cpp` hiç görünmüyordu; `ninja: no work to do` ve `ctest 2/2` çıktısı 14 Kasım

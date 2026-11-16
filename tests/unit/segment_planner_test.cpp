@@ -36,7 +36,8 @@ void expect_valid_plan(const std::vector<Segment>& segments, FileOffset total, i
     for (const Segment& segment : segments) {
         EXPECT_EQ(segment.offset, next_offset) << "ranges must be contiguous and gap-free";
         EXPECT_GT(segment.length, 0);
-        EXPECT_LE(segment.length, static_cast<FileOffset>(std::numeric_limits<std::int64_t>::max()));
+        EXPECT_LE(segment.length,
+                  static_cast<FileOffset>(std::numeric_limits<std::int64_t>::max()));
         smallest = std::min(smallest, segment.length);
         largest = std::max(largest, segment.length);
         next_offset += segment.length;
@@ -120,8 +121,12 @@ TEST(SegmentPlanner, MinimumSegmentSizeGrowsWithTheResource) {
 }
 
 TEST(SegmentPlanner, HandlesOneByteAndPrimeSizes) {
-    for (const FileOffset size : {FileOffset{1}, FileOffset{2}, FileOffset{1'000'003}, 3 * kMiB + 1,
-                                  7 * kMiB + 13, 13 * kMiB + 1}) {
+    for (const FileOffset size : {FileOffset{1},
+                                  FileOffset{2},
+                                  FileOffset{1'000'003},
+                                  3 * kMiB + 1,
+                                  7 * kMiB + 13,
+                                  13 * kMiB + 1}) {
         for (const int connections : {1, 2, 3, 5, 8, 64}) {
             expect_valid_plan(plan_segments(size, connections), size, connections);
         }
