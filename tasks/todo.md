@@ -63,7 +63,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S1b | `HttpClient` + tek bağlantılı indirme + yerel test HTTP sunucusu | **TAMAMLANDI** |
 | S2 | Probe (HEAD / `Range: bytes=0-0`, 206/200/416, metadata) | **TAMAMLANDI** |
 | S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** |
-| S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | **PLAN ONAYLI** |
+| S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | **TAMAMLANDI** |
 | S4b | clang-tidy temizliği (S4 sonrası; entegrasyon ve `--warnings-as-errors`) | |
 | S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | |
 | S6 | `RetryPolicy` + `RateLimiter` | |
@@ -329,10 +329,11 @@ indirir; sunucu/aralık koşulları sağlanmazsa **bir kez** tek akışa düşer
   uyuşmazlık başlık aşamasında görülünce gövdeyi tüketmeden tüm multi iptal edilmeli; `HttpTransport::
   get()` tek istek, senkron arayüzü bunu ifade edemez. Easy-handle ortak ayarları
   `core/src/curl_common.h`'a taşınır; `curl_transport.cpp` da onu kullanır (iki kopya drift etmez).
-- **`HttpRequest::range_start` / `range_length`** (curl `CURLOPT_RANGE`; `length < 0` → `a-`).
-  Aralık isteği varsa HTTP/1.1 zorlanır + `CURLOPT_PIPELINING = 0` (HTTP/2 multiplexing tüm segmentleri
-  tek TCP'ye bindirir); `CURLMOPT_MAX_HOST_CONNECTIONS = CURLMOPT_MAX_TOTAL_CONNECTIONS = connections`
-  (varsayılan 6 tuzağı).
+- **`HttpRequest::range_start` / `range_length`** (curl `CURLOPT_RANGE`). Aralık isteği varsa
+  HTTP/1.1 zorlanır ve her segment **yeni bağlantı** açar (`CURLOPT_FRESH_CONNECT`); HTTP/2
+  multiplexing tüm segmentleri tek TCP'ye bindirir, yeniden kullanılan boş bağlantı da segmentleri
+  sıraya sokar. `CURLMOPT_MAX_HOST_CONNECTIONS = CURLMOPT_MAX_TOTAL_CONNECTIONS = plan boyutu`
+  (bağlantı havuzu varsayılanının 8 segmenti kırmaması için).
 - **Başlık doğrulaması başlık callback'inde** (boş satır = başlık sonu): durum `206`; `Content-Range`
   `first/last/total` planlanan aralık ve probe boyutuyla aynı; `Content-Length` **varsa** segment
   uzunluğuna eşit (yoksa gövde sonu bayt sayacı belirler — RFC 9110 eksikliğe izin verir); iki tarafta
@@ -354,26 +355,26 @@ indirir; sunucu/aralık koşulları sağlanmazsa **bir kez** tek akışa düşer
   segmentli deneme. CLI `Downloader` kullanır; `SingleStreamDownloader` fallback olarak kalır.
 
 **Dosyalar**
-- [ ] `core/include/flowget/segment_planner.h`, `core/src/segment_planner.cpp`
-- [ ] `core/include/flowget/download.h` — ortak `DownloadOptions` / `DownloadProgress` /
+- [x] `core/include/flowget/segment_planner.h`, `core/src/segment_planner.cpp`
+- [x] `core/include/flowget/download.h` — ortak `DownloadOptions` / `DownloadProgress` /
       `DownloadSummary` / `ProgressCallback` tipleri (UTF-8 yol, `connections`, `headers`)
-- [ ] `core/include/flowget/downloader.h`, `core/src/downloader.cpp` — probe → plan → motor → fallback
-- [ ] `core/src/curl_common.h` — RAII handle'lar, global init, hata eşlemesi, ortak easy ayarları,
+- [x] `core/include/flowget/downloader.h`, `core/src/downloader.cpp` — probe → plan → motor → fallback
+- [x] `core/src/curl_common.h` — RAII handle'lar, global init, hata eşlemesi, ortak easy ayarları,
       başlık toplayıcı (256 KiB tampon, HTTP/1.1 + no pipelining aralıkta)
-- [ ] `core/src/segmented_download.h/.cpp` — çok segmentli motor (başlık doğrulaması, iptal, ilerleme)
-- [ ] `core/include/flowget/sha256.h`, `core/src/sha256.cpp` — akışlı SHA-256 (OpenSSL EVP)
-- [ ] `core/src/download_util.h` — UTF-8 yol → `std::filesystem::path`, üst dizin oluşturma
-- [ ] `core/src/single_stream_download.cpp` — `IStorage`'a geçiş (S4'ün ilk maddesi)
-- [ ] `core/src/curl_transport.cpp` — ortak `curl_common.h` kullanımı + `range_start/length`
-- [ ] `cli/src/main.cpp` — `wmain` + UTF-8 argv dönüşümü, konsol çıkışı UTF-8, `--connections`,
+- [x] `core/src/segmented_download.h/.cpp` — çok segmentli motor (başlık doğrulaması, iptal, ilerleme)
+- [x] `core/include/flowget/sha256.h`, `core/src/sha256.cpp` — akışlı SHA-256 (OpenSSL EVP)
+- [x] `core/src/download_util.h` — UTF-8 yol → `std::filesystem::path`, üst dizin oluşturma
+- [x] `core/src/single_stream_download.cpp` — `IStorage`'a geçiş (S4'ün ilk maddesi)
+- [x] `core/src/curl_transport.cpp` — ortak `curl_common.h` kullanımı + `range_start/length`
+- [x] `cli/src/main.cpp` — `wmain` + UTF-8 argv dönüşümü, konsol çıkışı UTF-8, `--connections`,
       `--header`, `Downloader` kullanımı, fallback notu
-- [ ] `CMakePresets.json` + `scripts/check_linux.ps1` — `linux-x64-tsan` preset'i ve üç preset koşusu
-- [ ] `tests/support/http_test_server.{h,cpp}` — `omit_content_length`, `content_length_override`,
+- [x] `CMakePresets.json` + `scripts/check_linux.ps1` — `linux-x64-tsan` preset'i ve üç preset koşusu
+- [x] `tests/support/http_test_server.{h,cpp}` — `omit_content_length`, `content_length_override`,
       `content_range_override` (uyuşmazlık senaryoları)
-- [ ] `tests/unit/segment_planner_test.cpp`, `tests/unit/sha256_test.cpp`
-- [ ] `tests/integration/segmented_download_test.cpp`; `single_stream_download_test.cpp` güncellemesi
+- [x] `tests/unit/segment_planner_test.cpp`, `tests/unit/sha256_test.cpp`
+- [x] `tests/integration/downloader_test.cpp` (`SegmentedDownload` süiti); `single_stream_download_test.cpp` güncellemesi
       (UTF-8 `std::string` yol + ASCII olmayan hedef)
-- [ ] `tests/CMakeLists.txt`, `core/CMakeLists.txt` — yeni kaynaklar/hedefler
+- [x] `tests/CMakeLists.txt`, `core/CMakeLists.txt` — yeni kaynaklar/hedefler
 
 **Testler**
 - Birim (planner): 100 MiB/8 → bitişik, boşluksuz, toplam == boyut; boyutlar farkı ≤ 1; `0` → boş;
@@ -416,7 +417,22 @@ indirir; sunucu/aralık koşulları sağlanmazsa **bir kez** tek akışa düşer
 **DoD:** Yukarıdaki testler yeşil; `-Werror` + clang-format temiz; `check_linux.ps1` (debug, ASan/UBSan,
 TSan) `exit 0`; CLI e2e hash eşleşmesi; fallback/hata sınıfları testlerle kilitli.
 
-**Kanıt (doldurulacak):** commit'ler, `ctest` sayıları, `check_linux.ps1` özeti, CLI e2e SHA-256.
+**Kanıt (2026-11-16):**
+- Commit'ler: `1cffbf6` (tek akış `IStorage`), `abd8f0e` (planner), `f38267e` (SHA-256),
+  `a1da161` (motor + fallback + testler), `31ed6ee` (CLI), `152c6db` (TSan preset'i).
+- Windows x64 (MSVC, `-Werror`) `ctest`: **2/2 passed** — `flowget_unit_tests` 59 test / 10 süit
+  (planner 11, SHA-256 9), `flowget_integration_tests` 44 test / 4 süit (13'ü `SegmentedDownload`),
+  entegrasyon 4.5 s.
+- `scripts/check_linux.ps1` (WSL2 Ubuntu, Clang 21.1.8): `linux-x64` (debug), `linux-x64-asan`
+  (ASan+UBSan), `linux-x64-tsan` (TSan) — üçünde de `ctest` **2/2 passed**, `exit 0` (~1 dk).
+- TSan ilk koşuda test altyapısında `HttpTestServer::Impl::listener` yarışı raporladı (üretim kodu
+  değil): alan `std::atomic` yapıldı, yıkıcı `exchange → shutdown + close → join` sırasına alındı
+  (Windows'ta `accept`'i uyandıran `closesocket`, POSIX'te `shutdown`). Sonraki koşu temiz.
+- CLI e2e (9 MiB, range destekli yerel sunucu, `--connections 4`): aynı anda 4 bağlantı; kaynak ve
+  hedef SHA-256 `9E6B4366044E90A16BE4A5651807609F32F873F1877E686012022668BD041D24`;
+  `--connections 0` / `65` → `exit=2`; range'siz sunucuda fallback ve ASCII olmayan hedef
+  (`İndirilenler/…`) yolla indirme doğrulandı.
+- `py -m pre_commit run --all-files`: temiz (clang-format, trailing whitespace, yaml/json).
 
 ### S4b — clang-tidy temizliği (S4 sonrası, ayrı dilim)
 

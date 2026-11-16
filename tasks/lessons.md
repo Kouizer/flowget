@@ -325,3 +325,35 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
 - Tekrarını önleyen kontrol: commit öncesi `.\scripts\check_linux.ps1` **exit 0** vermeden Linux
   doğrulaması yapılmış sayılmaz; CI'daki Linux job'u artık yalnızca son kapı (push sonrası sürpriz
   değil).
+
+### 2026-11-16 — Test sunucusunda TSan yarışı ve yıkıcı sırası
+- Belirti: `linux-x64-tsan` derleyip tüm testleri koşturdu; 44 entegrasyon testi "PASSED" görünürken
+  TSan 24 data race raporladı ve ctest `exit 8` verdi. Rapor `HttpTestServer::Impl` bloğunu
+  (offset 0x20 = `listener`) işaret ediyordu: yıkıcıda ana thread yazıyor, accept thread okuyor.
+- Kök neden: `listener` alanı atomik değildi; yıkıcı `close` ederken accept thread aynı baytları
+  okuyordu. Üretim kodu değil, test altyapısı yarışıydı — ama TSan haklıydı.
+- Düzeltmenin ilk denemesi **iki tuzak** çıkardı:
+  (a) yıkıcıdaki yerel `listener` değişkeni `Impl::listener` üyesini gölgeledi → MSVC `C4458`,
+  `-Werror` yüzünden Windows derlemesi düştü (yerel adlar `listening_socket` oldu);
+  (b) `shutdown()` sonrası `join()` Windows'ta **kilitlemiyor**: `shutdown` dinleme soketinde
+  `WSAENOTCONN` döner ve bloklu `accept`'i uyandırmaz; uyandıran `closesocket`'tir. Sonuç: ilk
+  entegrasyon testi 300 s zaman aşımına düştü. Doğrusu: `exchange(kInvalidSocket)` →
+  `shutdown` **ve** `close` → `join` (POSIX'te `shutdown`, Windows'ta `close` uyandırır).
+- Tekrarını önleyen kontrol: TSan/ASan preset'leri `check_linux.ps1` içinde kaldığı sürece yarış
+  sessizce geçemez; soket kapatan yıkıcılarda uyandırma yolu platforma göre test edilir
+  (uyandırmıyorsa test zaman aşımına düşer, yanlış yeşil üretmez).
+
+### 2026-11-16 — `pre_commit run --all-files` değişiklikleri sahnelemeden yeşil diyebilir
+- Belirti: `py -m pre_commit run --all-files` "clang-format Passed" dedi, commit atıldı; aynı hook
+  bir sonraki turda **commit edilmiş** kodu yeniden biçimlendirdi ve `git diff` gerçek format
+  farkları gösterdi (satır kırılmaları, include sırası).
+- Kök neden: pre-commit, hook'ları çalıştırmadan önce **sahnelenmemiş (unstaged) izlenen
+  dosyaları stash'ler** ve hook'lar HEAD içeriğini denetler. HEAD zaten biçimli olduğu için kontrol
+  "Passed" döner, sonra stash geri yüklenir; benim düzenlemelerim hiç denetlenmemiş olur. Yeni
+  (untracked) dosyalar stash'lenmediği için ilk turda gerçekten denetlenmişti; karışık durum kafa
+  karıştırdı.
+- Düzeltme: commit öncesi `git add -A` yapıp hook'u **sahnelenmiş** içerik üzerinde koşturmak.
+  Alternatif doğrulama: hook ortamındaki `clang-format.exe` ile dosyaları doğrudan biçimlendirip
+  `git diff` boş olduğunu görmek.
+- Tekrarını önleyen kontrol: `pre-commit` yeşilse `git status` temiz olmalı (denetlenmeyen değişiklik
+  kalmamalı); commit sonrası `git status --short` boş çıkmıyorsa hook gerçekten koşmamıştır.
