@@ -17,7 +17,9 @@ Bu dosya her oturumun başında okunur. Kısa tutulur; ayrıntı `tasks/` ve `do
 ## Bitti demeden önce kanıt
 - Build + `ctest` çalıştır, çıktıyı göster. Kanıtsız "tamam" deme.
 - Maddeyi `todo.md`'de ancak kanıtıyla (test çıktısı, ölçüm) işaretle.
-- Yerelde doğrulayamadığın bir şey (örn. Linux derlemesi) varsa **bunu açıkça yaz**; CI doğrulayacak.
+- Linux derlemesi de yerelde doğrulanır: `scripts/check_linux.ps1` (WSL2 Ubuntu; debug + ASan/UBSan).
+  "Doğrulanamadı" yazmak yerine betiğin sonucunu raporla. Yalnızca betiği çalıştıramadığın bir
+  durum (WSL yok, klon yok) varsa bunu gerekçesiyle açıkça yaz; CI doğrulayacak.
 - Kendine sor: kıdemli bir mühendis bu değişikliği onaylar mıydı?
 
 ## Kod kuralları
@@ -39,6 +41,11 @@ Bu dosya her oturumun başında okunur. Kısa tutulur; ayrıntı `tasks/` ve `do
   Örnekler: `py -m pip install ...`, `py scripts\check_dependencies.py`.
 - pre-commit: **commit'ten önce** `py -m pre_commit run --all-files` çalıştır (CI aynı kontrolü yapar).
   `pre-commit.exe` PATH'te olmayabilir; modül olarak çalıştır.
+- Linux doğrulaması: **commit'ten önce** `.\scripts\check_linux.ps1` çalıştır. Betik `C:\dev\flowget`
+  içeriğini WSL2'deki `~/flowget` klonuna rsync'ler (`build/`, `.git/` hariç) ve `linux-x64` (debug)
+  ile `linux-x64-asan` (ASan/UBSan) presetlerinde configure + build + `ctest` koşar. Linux derlemesi
+  yerelde doğrulanır; "doğrulanamadı" demek yerine sonucu raporla.
+  Gereksinim: WSL2 Ubuntu, `~/vcpkg` klonu (`FLOWGET_VCPKG_ROOT`) ve `cmake/clang/ninja/rsync`.
 - vcpkg: `FLOWGET_VCPKG_ROOT=C:\Users\Enes\vcpkg` tanımlıdır. Visual Studio'nun gömülü vcpkg'ını kullanma.
 - Yeni terminal/OpenCode oturumu açmadan ortam değişkeni değişiklikleri görünmez.
 
