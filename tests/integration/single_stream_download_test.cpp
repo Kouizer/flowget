@@ -1,5 +1,7 @@
+#include <flowget/download.h>
 #include <flowget/http_client.h>
 #include <flowget/single_stream_download.h>
+#include <flowget/storage.h>
 
 #include "support/http_test_server.h"
 
@@ -42,9 +44,24 @@ std::filesystem::path make_temp_dir() {
     return directory;
 }
 
-std::string read_file(const std::filesystem::path& path) {
-    std::ifstream file{path, std::ios::binary};
+// DownloadOptions carries UTF-8 paths (S4), so the tests convert the filesystem paths they build
+// themselves instead of relying on path::string(), which uses the ANSI code page on Windows.
+std::string to_utf8(const std::filesystem::path& path) {
+    const std::u8string value = path.u8string();
+    return std::string{value.begin(), value.end()};
+}
+
+std::filesystem::path from_utf8(const std::string& utf8) {
+    return std::filesystem::path{std::u8string{utf8.begin(), utf8.end()}};
+}
+
+std::string read_file(const std::string& utf8_path) {
+    std::ifstream file{from_utf8(utf8_path), std::ios::binary};
     return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+}
+
+bool file_exists(const std::string& utf8_path) {
+    return std::filesystem::exists(from_utf8(utf8_path));
 }
 
 TEST(SingleStreamDownload, WritesBodyVerbatim) {
@@ -64,7 +81,7 @@ TEST(SingleStreamDownload, WritesBodyVerbatim) {
 
     flowget::DownloadOptions options;
     options.url = server.url("/file.bin");
-    options.output_path = make_temp_dir() / "file.bin";
+    options.output_path = to_utf8(make_temp_dir() / "file.bin");
 
     const flowget::DownloadSummary summary = downloader.download(options);
 
@@ -90,14 +107,14 @@ TEST(SingleStreamDownload, FailsOnHttpErrorStatusAndLeavesNoFile) {
 
     flowget::DownloadOptions options;
     options.url = server.url("/missing.bin");
-    options.output_path = make_temp_dir() / "missing.bin";
+    options.output_path = to_utf8(make_temp_dir() / "missing.bin");
 
     const flowget::DownloadSummary summary = downloader.download(options);
 
     EXPECT_FALSE(summary.ok());
     EXPECT_EQ(summary.http.error, HttpError::http_status);
     EXPECT_EQ(summary.http.response.status, 404L);
-    EXPECT_FALSE(std::filesystem::exists(options.output_path));
+    EXPECT_FALSE(file_exists(options.output_path));
 }
 
 TEST(SingleStreamDownload, HandlesChunkedTransferWithoutContentLength) {
@@ -116,7 +133,7 @@ TEST(SingleStreamDownload, HandlesChunkedTransferWithoutContentLength) {
 
     flowget::DownloadOptions options;
     options.url = server.url("/chunked.bin");
-    options.output_path = make_temp_dir() / "chunked.bin";
+    options.output_path = to_utf8(make_temp_dir() / "chunked.bin");
 
     const flowget::DownloadSummary summary = downloader.download(options);
 
@@ -144,7 +161,7 @@ TEST(SingleStreamDownload, FollowsRedirects) {
 
     flowget::DownloadOptions options;
     options.url = server.url("/redirect");
-    options.output_path = make_temp_dir() / "final.bin";
+    options.output_path = to_utf8(make_temp_dir() / "final.bin");
 
     const flowget::DownloadSummary summary = downloader.download(options);
 
@@ -169,7 +186,7 @@ TEST(SingleStreamDownload, CancelsThrottledTransferAndRemovesPartialFile) {
 
     flowget::DownloadOptions options;
     options.url = server.url("/slow.bin");
-    options.output_path = make_temp_dir() / "slow.bin";
+    options.output_path = to_utf8(make_temp_dir() / "slow.bin");
 
     std::atomic<bool> cancel{false};
     const flowget::DownloadSummary summary = downloader.download(
@@ -184,7 +201,53 @@ TEST(SingleStreamDownload, CancelsThrottledTransferAndRemovesPartialFile) {
     EXPECT_FALSE(summary.ok());
     EXPECT_EQ(summary.http.error, HttpError::aborted);
     EXPECT_LT(summary.bytes_written, static_cast<std::int64_t>(payload.size()));
-    EXPECT_FALSE(std::filesystem::exists(options.output_path));
+    EXPECT_FALSE(file_exists(options.output_path));
+}
+
+TEST(SingleStreamDownload, WritesToNonAsciiPath) {
+    const std::string payload = make_payload(64 * 1024);
+    HttpTestServer server([&payload](const flowget::test::Request&) {
+        flowget::test::Response response;
+        response.status = 200;
+        response.body = payload;
+        return response;
+    });
+
+    HttpClient client;
+    SingleStreamDownloader downloader{client};
+
+    // Nested directory that does not exist yet: the downloader must create it through the UTF-8
+    // path (the old ofstream/path.string() code mangled these names on Windows).
+    const std::filesystem::path directory =
+        make_temp_dir() / std::filesystem::path{u8"İndirilenler"};
+    const std::filesystem::path file = directory / std::filesystem::path{u8"İndirilen_çğış.bin"};
+
+    flowget::DownloadOptions options;
+    options.url = server.url("/non-ascii.bin");
+    options.output_path = to_utf8(file);
+
+    const flowget::DownloadSummary summary = downloader.download(options);
+
+    ASSERT_TRUE(summary.ok()) << summary.message;
+    EXPECT_EQ(summary.bytes_written, static_cast<std::int64_t>(payload.size()));
+
+    // Verify through IStorage: ifstream(path) would go through the ANSI code page again and hide
+    // exactly the bug this test exists for.
+    const auto storage = flowget::make_platform_storage();
+    const flowget::StorageResult opened =
+        storage->open(options.output_path, flowget::OpenMode::read_only);
+    ASSERT_TRUE(opened.ok()) << opened.message;
+    flowget::FileOffset size = 0;
+    ASSERT_TRUE(storage->size(size).ok());
+    EXPECT_EQ(size, static_cast<flowget::FileOffset>(payload.size()));
+    std::string read_back(payload.size(), '\0');
+    std::size_t read = 0;
+    const auto read_result =
+        storage->read_at(0, reinterpret_cast<std::byte*>(read_back.data()), read_back.size(), read);
+    ASSERT_TRUE(read_result.ok()) << read_result.message;
+    EXPECT_EQ(read, payload.size());
+    EXPECT_EQ(read_back, payload);
+    EXPECT_TRUE(std::filesystem::exists(file));
 }
 
 TEST(SingleStreamDownload, DetectsDroppedConnection) {
@@ -202,12 +265,12 @@ TEST(SingleStreamDownload, DetectsDroppedConnection) {
 
     flowget::DownloadOptions options;
     options.url = server.url("/dropped.bin");
-    options.output_path = make_temp_dir() / "dropped.bin";
+    options.output_path = to_utf8(make_temp_dir() / "dropped.bin");
 
     const flowget::DownloadSummary summary = downloader.download(options);
 
     EXPECT_FALSE(summary.ok());
-    EXPECT_FALSE(std::filesystem::exists(options.output_path));
+    EXPECT_FALSE(file_exists(options.output_path));
 }
 
 } // namespace
