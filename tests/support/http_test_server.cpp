@@ -305,8 +305,11 @@ bool write_head(SocketHandle socket, const Response& response) {
     }
     if (response.chunked) {
         head += "Transfer-Encoding: chunked\r\n";
-    } else {
-        head += "Content-Length: " + std::to_string(response.body.size()) + "\r\n";
+    } else if (!response.omit_content_length) {
+        head += "Content-Length: " +
+                (response.content_length_override.empty() ? std::to_string(response.body.size())
+                                                          : response.content_length_override) +
+                "\r\n";
     }
     head += "\r\n";
     return send_all(socket, head.data(), head.size());
@@ -365,9 +368,14 @@ struct HttpTestServer::Impl {
     explicit Impl(Handler handler_in) : handler(std::move(handler_in)) {}
 
     Handler handler;
-    SocketHandle listener = kInvalidSocket;
+    // Read by the accept thread, written by the destructor: it must be atomic. The destructor
+    // shuts the socket down, joins the accept thread and only then closes/invalidates it, so the
+    // descriptor number is never reused while accept() might still use it.
+    std::atomic<SocketHandle> listener{kInvalidSocket};
     std::uint16_t port = 0;
     std::atomic<std::size_t> requests{0};
+    std::atomic<int> active_connections{0};
+    std::atomic<int> peak_connections{0};
     std::atomic<bool> stopping{false};
     std::jthread accept_thread;
     std::mutex mutex;
@@ -381,8 +389,12 @@ struct HttpTestServer::Impl {
             address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
             SocketLength address_length = static_cast<SocketLength>(sizeof(address));
+            const SocketHandle listening_socket = listener.load(std::memory_order_relaxed);
+            if (listening_socket == kInvalidSocket) {
+                return;
+            }
             const SocketHandle client =
-                ::accept(listener, reinterpret_cast<sockaddr*>(&address), &address_length);
+                ::accept(listening_socket, reinterpret_cast<sockaddr*>(&address), &address_length);
             if (client == kInvalidSocket) {
                 if (stopping.load()) {
                     return;
@@ -402,6 +414,12 @@ struct HttpTestServer::Impl {
         if (read_request(client, request)) {
             requests.fetch_add(1);
 
+            const int concurrent = active_connections.fetch_add(1, std::memory_order_relaxed) + 1;
+            int observed = peak_connections.load(std::memory_order_relaxed);
+            while (concurrent > observed && !peak_connections.compare_exchange_weak(
+                                                observed, concurrent, std::memory_order_relaxed)) {
+            }
+
             Handler local_handler;
             {
                 std::lock_guard<std::mutex> guard(mutex);
@@ -418,6 +436,9 @@ struct HttpTestServer::Impl {
                 if (served.honor_range) {
                     apply_range(request, served);
                 }
+                if (!served.content_range_override.empty()) {
+                    served.headers["Content-Range"] = served.content_range_override;
+                }
                 if (write_head(client, served) && request.method != "HEAD") {
                     static_cast<void>(write_body(client, served));
                 }
@@ -425,6 +446,7 @@ struct HttpTestServer::Impl {
         }
 
         static_cast<void>(close_socket(client));
+        active_connections.fetch_sub(1, std::memory_order_relaxed);
         std::lock_guard<std::mutex> guard(mutex);
         active.erase(client);
     }
@@ -432,10 +454,14 @@ struct HttpTestServer::Impl {
     ~Impl() {
         stopping = true;
         accept_thread.request_stop();
-        if (listener != kInvalidSocket) {
-            shutdown_socket(listener);
-            static_cast<void>(close_socket(listener));
-            listener = kInvalidSocket;
+        // Wake a thread blocked in accept(): shutdown() does that on POSIX, closesocket() on
+        // Windows. The exchange makes the invalid value visible to the accept thread before the
+        // descriptor is closed, so it never re-uses a stale handle.
+        const SocketHandle listening_socket =
+            listener.exchange(kInvalidSocket, std::memory_order_relaxed);
+        if (listening_socket != kInvalidSocket) {
+            shutdown_socket(listening_socket);
+            static_cast<void>(close_socket(listening_socket));
         }
         if (accept_thread.joinable()) {
             accept_thread.join();
@@ -463,40 +489,38 @@ HttpTestServer::HttpTestServer(Handler handler)
     ensure_winsock();
 
     Impl& impl = *impl_;
-    impl.listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (impl.listener == kInvalidSocket) {
+    const SocketHandle listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listener == kInvalidSocket) {
         throw std::runtime_error("test server: socket() failed");
     }
 
     const int reuse = 1;
-    static_cast<void>(::setsockopt(impl.listener,
-                                   SOL_SOCKET,
-                                   SO_REUSEADDR,
-                                   reinterpret_cast<const char*>(&reuse),
-                                   sizeof(reuse)));
+    static_cast<void>(::setsockopt(
+        listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse)));
 
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     address.sin_port = 0;
 
-    if (::bind(impl.listener,
+    if (::bind(listener,
                reinterpret_cast<sockaddr*>(&address),
                static_cast<SocketLength>(sizeof(address))) != 0) {
-        static_cast<void>(close_socket(impl.listener));
+        static_cast<void>(close_socket(listener));
         throw std::runtime_error("test server: bind() failed");
     }
-    if (::listen(impl.listener, 16) != 0) {
-        static_cast<void>(close_socket(impl.listener));
+    if (::listen(listener, 16) != 0) {
+        static_cast<void>(close_socket(listener));
         throw std::runtime_error("test server: listen() failed");
     }
 
     SocketLength length = static_cast<SocketLength>(sizeof(address));
-    if (::getsockname(impl.listener, reinterpret_cast<sockaddr*>(&address), &length) != 0) {
-        static_cast<void>(close_socket(impl.listener));
+    if (::getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length) != 0) {
+        static_cast<void>(close_socket(listener));
         throw std::runtime_error("test server: getsockname() failed");
     }
     impl.port = ntohs(address.sin_port);
+    impl.listener.store(listener, std::memory_order_relaxed);
 
     impl.accept_thread = std::jthread([&impl](std::stop_token token) { impl.accept_loop(token); });
 }
@@ -513,6 +537,10 @@ std::string HttpTestServer::url(std::string_view path) const {
 
 std::size_t HttpTestServer::request_count() const {
     return impl_->requests.load();
+}
+
+int HttpTestServer::peak_concurrency() const {
+    return impl_->peak_connections.load();
 }
 
 } // namespace flowget::test

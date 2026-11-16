@@ -45,6 +45,11 @@ struct HttpRequest {
     // Hard limit for the whole transfer, redirects included. 0 keeps the transport defaults
     // (connect timeout + low-speed abort). Used by probing, where a stalled server must not block.
     std::int64_t timeout_ms = 0;
+    // Optional byte range: `range_length` bytes starting at `range_start`. Both -1 means "no Range
+    // header". The segmented engine sets one range per connection; a ranged request is pinned to
+    // HTTP/1.1 on a fresh connection.
+    std::int64_t range_start = -1;
+    std::int64_t range_length = -1;
 };
 
 struct HttpResponse {

@@ -4,6 +4,7 @@ add_library(
     src/api.cpp
     src/build_info.cpp
     src/http_client.cpp
+    src/curl_common.cpp
     src/curl_transport.cpp
     src/http_range.cpp
     src/http_filename.cpp
@@ -12,6 +13,8 @@ add_library(
     src/sha256.cpp
     src/download.cpp
     src/single_stream_download.cpp
+    src/segmented_download.cpp
+    src/downloader.cpp
     src/storage.cpp)
 
 # One interface, one implementation per platform. Keeping the POSIX code out of the Windows build (and

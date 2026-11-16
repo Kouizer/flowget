@@ -36,6 +36,7 @@ flowget_set_warnings(flowget_unit_tests)
 # network access and no external process. The port is chosen by the OS on loopback.
 add_executable(flowget_integration_tests
                integration/single_stream_download_test.cpp
+               integration/downloader_test.cpp
                integration/probe_test.cpp
                integration/storage_io_test.cpp
                support/http_test_server.cpp)
