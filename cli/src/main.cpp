@@ -1,14 +1,28 @@
 #include <flowget/build_info.h>
+#include <flowget/download.h>
+#include <flowget/downloader.h>
 #include <flowget/flowget.h>
 #include <flowget/http_client.h>
 #include <flowget/probe.h>
-#include <flowget/single_stream_download.h>
+#include <flowget/segment_planner.h>
 
 #include <cctype>
+#include <charconv>
 #include <cinttypes>
 #include <cstdio>
+#include <limits>
+#include <map>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+#ifdef _WIN32
+#include <cstddef>
+
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -19,16 +33,23 @@ void print_usage(std::FILE* out) {
                  "Usage: %.*s <command> [options]\n"
                  "\n"
                  "Commands:\n"
-                 "  get <url> -o <file>   Download one file over a single connection\n"
+                 "  get <url> -o <file>   Download one file (segmented when the server allows it)\n"
                  "  probe <url>           Report size, range support and metadata, no download\n"
                  "  --version, -V         Print version information and exit\n"
                  "  --help, -h            Print this help and exit\n"
+                 "\n"
+                 "Get options:\n"
+                 "  -o, --output <file>   Destination path (UTF-8)\n"
+                 "  --connections <n>     Concurrent connections, 1-64 (default: 8)\n"
+                 "                        1 skips probing and downloads over a single stream\n"
+                 "  --user-agent <ua>     User-Agent header (default: FlowGet/0.1.0)\n"
+                 "  --header \"Name: v\"    Extra request header; repeatable\n"
                  "\n"
                  "Probe options:\n"
                  "  --user-agent <ua>     User-Agent header (default: FlowGet/0.1.0)\n"
                  "  --header \"Name: v\"    Extra request header; repeatable\n"
                  "\n"
-                 "Segmented downloads, resume and rate limits arrive later in M1.\n",
+                 "Resume and rate limits arrive later in M1.\n",
                  static_cast<int>(kProgramName.size()),
                  kProgramName.data());
 }
@@ -55,28 +76,83 @@ void print_progress(const flowget::DownloadProgress& progress) {
     std::fflush(stderr);
 }
 
-int run_get(int argc, char** argv) {
-    std::string url;
-    std::string output;
-    std::string user_agent{"FlowGet/0.1.0"};
+std::string_view trim(std::string_view text) {
+    const auto is_space = [](unsigned char character) { return std::isspace(character) != 0; };
+    while (!text.empty() && is_space(static_cast<unsigned char>(text.front()))) {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && is_space(static_cast<unsigned char>(text.back()))) {
+        text.remove_suffix(1);
+    }
+    return text;
+}
 
-    for (int index = 2; index < argc; ++index) {
-        const std::string_view arg = argv[index];
+// Accepts `Name: value` (the space is optional, like an HTTP header) and stores the trimmed value.
+bool add_header(std::map<std::string, std::string>& headers, std::string_view header) {
+    const std::size_t colon = header.find(':');
+    if (colon == std::string_view::npos) {
+        return false;
+    }
+    const std::string_view name = trim(header.substr(0, colon));
+    if (name.empty()) {
+        return false;
+    }
+    headers[std::string{name}] = std::string{trim(header.substr(colon + 1))};
+    return true;
+}
+
+bool parse_connections(std::string_view text, int& out) {
+    int value = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) {
+        return false;
+    }
+    if (value < 1 || value > flowget::kMaxConnections) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+int run_get(const std::vector<std::string>& args) {
+    std::string url;
+    flowget::DownloadOptions options;
+
+    for (std::size_t index = 2; index < args.size(); ++index) {
+        const std::string_view arg = args[index];
         const auto next_value = [&](std::string& target) {
-            if (index + 1 >= argc) {
+            if (index + 1 >= args.size()) {
                 print_error("missing value after " + std::string{arg});
                 return false;
             }
-            target = argv[++index];
+            target = args[++index];
             return true;
         };
 
         if (arg == "-o" || arg == "--output") {
-            if (!next_value(output)) {
+            if (!next_value(options.output_path)) {
+                return 2;
+            }
+        } else if (arg == "--connections") {
+            std::string value;
+            if (!next_value(value)) {
+                return 2;
+            }
+            if (!parse_connections(value, options.connections)) {
+                print_error("--connections expects an integer between 1 and 64");
                 return 2;
             }
         } else if (arg == "--user-agent") {
-            if (!next_value(user_agent)) {
+            if (!next_value(options.user_agent)) {
+                return 2;
+            }
+        } else if (arg == "--header") {
+            std::string header;
+            if (!next_value(header)) {
+                return 2;
+            }
+            if (!add_header(options.headers, header)) {
+                print_error("--header expects \"Name: value\"");
                 return 2;
             }
         } else if (!arg.empty() && arg.front() == '-') {
@@ -90,19 +166,15 @@ int run_get(int argc, char** argv) {
         }
     }
 
-    if (url.empty() || output.empty()) {
+    if (url.empty() || options.output_path.empty()) {
         print_error("get requires a URL and -o <file>");
         print_usage(stderr);
         return 2;
     }
+    options.url = url;
 
     flowget::HttpClient client;
-    flowget::SingleStreamDownloader downloader{client};
-
-    flowget::DownloadOptions options;
-    options.url = url;
-    options.output_path = output;
-    options.user_agent = user_agent;
+    flowget::Downloader downloader{client};
 
     const flowget::DownloadSummary summary = downloader.download(
         options, [](const flowget::DownloadProgress& progress) { print_progress(progress); });
@@ -115,19 +187,16 @@ int run_get(int argc, char** argv) {
         return 1;
     }
 
-    std::printf("saved %" PRId64 " bytes to %s\n", summary.bytes_written, output.c_str());
+    if (summary.fallback) {
+        std::fprintf(stderr,
+                     "note: ranged download failed (%s); saved over a single connection\n",
+                     summary.fallback_reason.c_str());
+    }
+    std::printf("saved %" PRId64 " bytes to %s using %d connection(s)\n",
+                summary.bytes_written,
+                options.output_path.c_str(),
+                summary.connections);
     return 0;
-}
-
-std::string_view trim(std::string_view text) {
-    const auto is_space = [](unsigned char character) { return std::isspace(character) != 0; };
-    while (!text.empty() && is_space(static_cast<unsigned char>(text.front()))) {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && is_space(static_cast<unsigned char>(text.back()))) {
-        text.remove_suffix(1);
-    }
-    return text;
 }
 
 void print_optional(std::string_view label, const std::string& value) {
@@ -136,18 +205,18 @@ void print_optional(std::string_view label, const std::string& value) {
     }
 }
 
-int run_probe(int argc, char** argv) {
+int run_probe(const std::vector<std::string>& args) {
     std::string url;
     flowget::ProbeOptions options;
 
-    for (int index = 2; index < argc; ++index) {
-        const std::string_view arg = argv[index];
+    for (std::size_t index = 2; index < args.size(); ++index) {
+        const std::string_view arg = args[index];
         const auto next_value = [&](std::string& target) {
-            if (index + 1 >= argc) {
+            if (index + 1 >= args.size()) {
                 print_error("missing value after " + std::string{arg});
                 return false;
             }
-            target = argv[++index];
+            target = args[++index];
             return true;
         };
 
@@ -160,13 +229,10 @@ int run_probe(int argc, char** argv) {
             if (!next_value(header)) {
                 return 2;
             }
-            const std::size_t colon = header.find(':');
-            const std::string_view name = trim(std::string_view{header}.substr(0, colon));
-            if (colon == std::string::npos || name.empty()) {
+            if (!add_header(options.headers, header)) {
                 print_error("--header expects \"Name: value\"");
                 return 2;
             }
-            options.headers[std::string{name}] = std::string{trim(header.substr(colon + 1))};
         } else if (!arg.empty() && arg.front() == '-') {
             print_error("unknown option " + std::string{arg});
             return 2;
@@ -229,20 +295,18 @@ int handle_flag(std::string_view flag) {
     return -1;
 }
 
-} // namespace
-
-int main(int argc, char** argv) {
-    if (argc < 2) {
+int run_cli(const std::vector<std::string>& args) {
+    if (args.size() < 2) {
         print_usage(stderr);
         return 2;
     }
 
-    const std::string_view command = argv[1];
+    const std::string_view command = args[1];
     if (command == "get") {
-        return run_get(argc, argv);
+        return run_get(args);
     }
     if (command == "probe") {
-        return run_probe(argc, argv);
+        return run_probe(args);
     }
 
     // Flags are mutually exclusive and terminate the process, so only argv[1] can ever be handled:
@@ -256,3 +320,70 @@ int main(int argc, char** argv) {
     print_usage(stderr);
     return 2;
 }
+
+} // namespace
+
+#ifdef _WIN32
+
+namespace {
+
+// wmain receives UTF-16 from Windows; the rest of the program (and the core API) speaks UTF-8.
+// Converting here keeps Turkish/CJK/emoji paths intact end to end (S3/S4 decision).
+bool utf8_from_wide(std::wstring_view text, std::string& out) {
+    if (text.empty()) {
+        out.clear();
+        return true;
+    }
+    if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return false;
+    }
+    const int length = static_cast<int>(text.size());
+    const int size = ::WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), length, nullptr, 0, nullptr, nullptr);
+    if (size <= 0) {
+        return false;
+    }
+    out.assign(static_cast<std::size_t>(size), '\0');
+    return ::WideCharToMultiByte(CP_UTF8,
+                                 WC_ERR_INVALID_CHARS,
+                                 text.data(),
+                                 length,
+                                 out.data(),
+                                 size,
+                                 nullptr,
+                                 nullptr) == size;
+}
+
+} // namespace
+
+int wmain(int argc, wchar_t** argv) {
+    // Without this, printf writes the ANSI code page and a UTF-8 path prints as mojibake.
+    static_cast<void>(::SetConsoleOutputCP(CP_UTF8));
+
+    std::vector<std::string> args;
+    args.reserve(static_cast<std::size_t>(argc > 0 ? argc : 0));
+    for (int index = 0; index < argc; ++index) {
+        std::string argument;
+        if (!utf8_from_wide(argv[index] != nullptr ? std::wstring_view{argv[index]}
+                                                   : std::wstring_view{},
+                            argument)) {
+            print_error("the command line is not valid UTF-16");
+            return 2;
+        }
+        args.push_back(std::move(argument));
+    }
+    return run_cli(args);
+}
+
+#else
+
+int main(int argc, char** argv) {
+    std::vector<std::string> args;
+    args.reserve(static_cast<std::size_t>(argc > 0 ? argc : 0));
+    for (int index = 0; index < argc; ++index) {
+        args.emplace_back(argv[index] != nullptr ? argv[index] : "");
+    }
+    return run_cli(args);
+}
+
+#endif
