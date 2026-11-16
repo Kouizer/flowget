@@ -64,7 +64,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S2 | Probe (HEAD / `Range: bytes=0-0`, 206/200/416, metadata) | **TAMAMLANDI** |
 | S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | **TAMAMLANDI** |
-| S4b | clang-tidy temizliği (S4 sonrası; entegrasyon ve `--warnings-as-errors`) | |
+| S4b | S4b-lite: clang-tidy dosya listesi + gerçek bulgular + baseline (`--warnings-as-errors` S8'e ertelendi) | |
 | S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | |
 | S6 | `RetryPolicy` + `RateLimiter` | |
 | S7 | `DynamicSplitter` + benchmark tablosu | |
@@ -283,7 +283,7 @@ kilitliyor (`tasks/lessons.md`).
 `-Wconversion -Wsign-conversion -Werror` ile derledi ve ASan/UBSan `ctest`'ini koşturdu; böylece
 "Linux CI push sonrası doğrulanacak" notu kapandı.
 
-### S4 — SegmentPlanner + curl multi, çok parçalı indirme, tek akışa düşüş — **PLAN ONAYLI (2026-11-16)**
+### S4 — SegmentPlanner + curl multi, çok parçalı indirme, tek akışa düşüş — **TAMAMLANDI (2026-11-16)**
 
 **Hedef:** `flowget-cli get <url> -o out.bin --connections 8` tek dosyayı N aralığa bölüp aynı anda
 indirir; sunucu/aralık koşulları sağlanmazsa **bir kez** tek akışa düşer. Motor tek iş parçacığında
@@ -433,6 +433,9 @@ TSan) `exit 0`; CLI e2e hash eşleşmesi; fallback/hata sınıfları testlerle k
   `--connections 0` / `65` → `exit=2`; range'siz sunucuda fallback ve ASCII olmayan hedef
   (`İndirilenler/…`) yolla indirme doğrulandı.
 - `py -m pre_commit run --all-files`: temiz (clang-format, trailing whitespace, yaml/json).
+- **Kanıt (CI, 2026-11-16):** GitHub Actions **run #12**, commit `6437b8a` (S4'ün merge commit'i;
+  push sonrası amend uzlaştırması dahil) — Windows (MSVC), Linux (Clang, ASan/UBSan) ve `policy`
+  job'larının üçü de yeşil. Böylece S4'ün "CI doğrulaması push sonrası" notu kapandı.
 
 ### S4b — clang-tidy temizliği (S4 sonrası, ayrı dilim)
 
@@ -446,7 +449,8 @@ bulgular düzeltilsin. Karışık commit (davranış + stil) review'u zorlaştı
 - [ ] `misc-include-cleaner` **kapatılır** (üçüncü parti başlıklar ve platform başlıkları yüzünden
       gürültülü; IWYU ayrı iş).
 - [ ] Gerçek bulgular düzeltilir (uyarı susturma yok; kök neden).
-- [ ] Sonra CI'da `--warnings-as-errors` açılır ve clang-tidy adımındaki `continue-on-error` kaldırılır.
+- [ ] `--warnings-as-errors` ve CI'daki `continue-on-error` kaldırma **M1 sonuna (S8) ertelendi**;
+      o zamana kadar clang-tidy advisory kalır.
 - [ ] Kanıt: clang-tidy çıktısı temiz + CI yeşil.
 
 ### Tasarım
