@@ -49,7 +49,8 @@ bool ensure_parent_directory(const std::string& utf8_path, std::string& error) {
     std::error_code filesystem_error;
     std::filesystem::create_directories(parent, filesystem_error);
     if (filesystem_error) {
-        error = "cannot create directory " + utf8_string(parent) + ": " + filesystem_error.message();
+        error =
+            "cannot create directory " + utf8_string(parent) + ": " + filesystem_error.message();
         return false;
     }
     return true;
