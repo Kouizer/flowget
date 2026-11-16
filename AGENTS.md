@@ -39,7 +39,9 @@ Bu dosya her oturumun başında okunur. Kısa tutulur; ayrıntı `tasks/` ve `do
 ## Windows araçları
 - Python için **`py`** komutunu kullan. `python` Windows Store kısayoluna takılabilir.
   Örnekler: `py -m pip install ...`, `py scripts\check_dependencies.py`.
-- pre-commit: **commit'ten önce** `py -m pre_commit run --all-files` çalıştır (CI aynı kontrolü yapar).
+- pre-commit: **`git add -A` yaptıktan SONRA** `py -m pre_commit run --all-files` çalıştır (CI aynı
+  kontrolü yapar). Sıra önemli: pre-commit sahnelenmemiş değişiklikleri stash'leyip HEAD'i denetler;
+  önce koşarsa kendi değişikliklerini görmeden "Passed" der (`tasks/lessons.md`, 2026-11-16).
   `pre-commit.exe` PATH'te olmayabilir; modül olarak çalıştır.
 - Linux doğrulaması: **commit'ten önce** `.\scripts\check_linux.ps1` çalıştır. Betik `C:\dev\flowget`
   içeriğini WSL2'deki `~/flowget` klonuna rsync'ler (`build/`, `.git/` hariç) ve `linux-x64` (debug)
@@ -52,6 +54,9 @@ Bu dosya her oturumun başında okunur. Kısa tutulur; ayrıntı `tasks/` ve `do
 ## Git
 - Conventional commits (`feat(core): ...`, `fix(build): ...`, `docs: ...`). Küçük, mantıklı commit'ler.
 - **Commit'le ama `git push` yapma.** Push'u kullanıcı yapar.
+- **Push'lanmış commit'i asla amend etme / force push yapma.** Düzeltme gerekiyorsa **yeni commit** at.
+  (2026-11-16: push sonrası amend, `origin/main` ile ayrık geçmiş üretti; gereksiz merge commit'i
+  `6437b8a` doğdu.)
 - Git kimliğini ve yapılandırmasını değiştirme.
 - Proje klasörü dışındaki dosyalara dokunma.
 

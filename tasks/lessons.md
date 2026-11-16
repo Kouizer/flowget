@@ -357,3 +357,18 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
   `git diff` boş olduğunu görmek.
 - Tekrarını önleyen kontrol: `pre-commit` yeşilse `git status` temiz olmalı (denetlenmeyen değişiklik
   kalmamalı); commit sonrası `git status --short` boş çıkmıyorsa hook gerçekten koşmamıştır.
+
+### 2026-11-16 — Push'lanmış commit amend edildi; geçmiş ayrıştı, merge commit'i gerekti
+- Belirti: `git log --all --oneline` aynı işi iki SHA ile gösterdi: `627fa48` (`origin/main` üzerinde)
+  ve `f38267e` (yerelde) "add streaming SHA-256 helper". `main` ile `origin/main` ayrıştı ve
+  `6437b8a merge: reconcile amended SHA-256 commit with origin` merge commit'i oluştu.
+- Kök neden: commit **push edildikten sonra** `git commit --amend` ile değiştirildi. Amend aynı
+  içeriğe yeni bir SHA üretir; `origin/main` eski SHA'yı tuttuğu için iki geçmiş ortak atadan sonra
+  ayrışır. Force push yapılmadığı için uzak dal bozulmadı ve sorun CI'da kırmızı üretmedi; bu yüzden
+  hata geç fark edildi. Yerelde `git log` "düzgün" görünüyordu, çünkü yerel dal yeni SHA'yı taşıyordu.
+- Düzeltme: force push yerine yerel geçmiş korunarak `origin/main` merge edildi (`6437b8a`); kural
+  `AGENTS.md` Git bölümüne yazıldı: push'lanmış commit amend edilmez, düzeltme yeni commit olarak
+  atılır.
+- Tekrarını önleyen kontrol: commit öncesi `git status -sb` çıktısında `ahead/behind` yoksa
+  (HEAD == origin/main) amend/`rebase -i` yapılmaz. Push sonrası `git log --oneline origin/main..HEAD`
+  boş olmalı; doluysa yeni commit'ler push edilmemiş demektir, geçmiş değiştirilmez.
