@@ -258,3 +258,35 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
   bir değeri sadece **argüman olarak hesaplamak** için yakalama gerekmez. Bu sınıfı yalnız Linux CI
   (Clang) yakalar; yerel makinede Clang yok, bu yüzden yerel MSVC build'i tek başına yeterli kanıt
   sayılmaz.
+
+### 2026-11-15 — Linux derleme hataları ancak push sonrası CI'da ortaya çıkıyordu
+- Belirti: Yerelde MSVC build + `ctest` yeşil ve `pre-commit` temiz olduğu hâlde push sonrası Linux
+  job'u kırmızı döndü (örnek: `-Wunused-lambda-capture`). Her tur push → CI bekleme → düzeltme
+  maliyetindeydi; dilim "bitti" denildiğinde Linux tarafı henüz hiç doğrulanmamış oluyordu.
+- Kök neden: Yerel doğrulama yalnız Windows araç zincirini (MSVC + `windows.h` tuzakları) kapsıyordu;
+  CI'ın Linux job'u (Clang `-Wconversion -Wsign-conversion -Werror`, ASan/UBSan) yerelde **hiç
+  koşmuyordu**. Clang'in MSVC'de karşılığı olmayan tanılamaları ve sanitizer davranışı bu yüzden
+  geri bildirim döngüsünün en pahalı yerinde (CI'da) görünüyordu. Yani sorun "Linux bozuk" değil,
+  doğrulama kapsamının platform eksik olmasıydı.
+- Düzeltme: `scripts/check_linux.ps1` eklendi — depoyu WSL2'deki `~/flowget` klonuna rsync'ler
+  (`build/`, `.git/` hariç), sonra `linux-x64` (debug) ve `linux-x64-asan` (ASan/UBSan) presetlerini
+  configure + build + `ctest` eder ve CI'daki adımların aynısını yerelde koşturur. `AGENTS.md`'de
+  commit öncesi zorunlu adım yapıldı; "Linux derlemesi yerelde doğrulanamaz, CI doğrular" kuralı
+  kaldırıldı.
+- Betik yazılırken çıkan üç tuzak (üçü de sessiz kırılma üretiyordu):
+  (a) `bash -lc` **login** shell olduğu için `~/.bashrc` okunmaz → orada tanımlı `FLOWGET_VCPKG_ROOT`
+  boş geliyor ve CMake "No vcpkg root found" ile duruyor; betik değişkeni kendisi export ediyor.
+  (b) `.gitattributes` `*.ps1` dosyalarını CRLF checkout ediyor; CRLF'li uzak script bash'e
+  `cmake --preset linux-x64\r` olarak gider ve "unknown preset" gibi yanıltıcı hata verir; betik
+  metni bash'e vermeden önce LF'e normalize ediyor.
+  (c) Klasik `rsync -a` "değişmedi" kararını boyut + mtime ile veriyor; WSL'in drvfs/9p katmanı yeni
+  yazılmış bir zaman damgasını birkaç saniye eski gösterebildiği için senkronizasyon dosyayı atladı
+  ve `ninja: no work to do` + yeşil `ctest` çıktısı **eski kaynak** için "başarılı" dedi. Yani
+  doğrulama betiği yanlış yeşil üretebiliyordu. Düzeltme: `--checksum` — dosyanın kopyalanıp
+  kopyalanmayacağına içerik karar verir, damga yanılsaması kararı etkilemez. Denenip **yanlış çıkan**
+  ara çözüm: `--no-times`; içeriği güncelliyor ama hedefte eski mtime'ı bırakıyor, ninja yine
+  "no work to do" diyor. Doğrusu `-a --checksum`: mtime kaynaktan gelir (`-a` → `-t`), böylece ninja
+  tam olarak kopyalanan dosyaları yeniden derler.
+- Tekrarını önleyen kontrol: commit öncesi `.\scripts\check_linux.ps1` **exit 0** vermeden Linux
+  doğrulaması yapılmış sayılmaz; CI'daki Linux job'u artık yalnızca son kapı (push sonrası sürpriz
+  değil).

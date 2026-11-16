@@ -271,6 +271,12 @@ kilitliyor (`tasks/lessons.md`).
 `PosixStorage` bu makinede hiç derlenmedi; push sonrası CI doğrulayacak. `_FILE_OFFSET_BITS=64` ve
 `off_t` `static_assert`'leri bilinçli olarak build zamanında yakalar.
 
+> **2026-11-15 güncellemesi — bu not geçersiz:** Linux presetleri artık yerelde koşuluyor.
+> `scripts/check_linux.ps1` depoyu WSL2'deki `~/flowget` klonuna senkronize edip `linux-x64` (debug) ve
+> `linux-x64-asan` (ASan/UBSan) için configure + build + `ctest` çalıştırıyor; iki preset için de
+> `2/2 tests passed` (Clang 21.1.8, cmake 4.2.3). `AGENTS.md`'deki "Linux derlemesi yerelde
+> doğrulanamaz" kuralı bu nedenle güncellendi; arka plan `tasks/lessons.md` (2026-11-15).
+
 ### Tasarım
 - [ ] **S4'ün ilk maddesi:** `SingleStreamDownloader`'ı `IStorage`'a taşı, ASCII olmayan hedef yolla test
       et (bugün `ofstream` + `path.string()` ANSI kod sayfası kullanır; `tasks/todo.md` S3 kararı).
