@@ -16,7 +16,7 @@ namespace {
 constexpr const char* kFallbackFilename = "download.bin";
 // libcurl delivers the body in chunks; this keeps a server that ignores `Range` from streaming a
 // whole file into memory, without affecting the 1-byte 206 path.
-constexpr std::int64_t kDefaultBodyLimit = 64 * 1024;
+constexpr std::int64_t kDefaultBodyLimit = std::int64_t{64} * 1024;
 
 HttpRequest make_request(const ProbeOptions& options, HttpMethod method) {
     HttpRequest request;

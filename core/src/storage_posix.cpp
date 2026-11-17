@@ -27,7 +27,7 @@ namespace {
 
 // pwrite/pread take size_t, but a single call is kept small so a partial transfer is a normal event
 // rather than a rare one, and so one worker cannot monopolize the file descriptor for long.
-constexpr std::size_t kMaxChunk = 4U * 1024U * 1024U;
+constexpr std::size_t kMaxChunk = std::size_t{4} * 1024 * 1024;
 
 bool is_retryable_errno(int code) {
     return code == EINTR || code == EAGAIN || code == EWOULDBLOCK;

@@ -17,7 +17,7 @@ namespace {
 
 // WriteFile/ReadFile take a DWORD length. 4 MiB keeps a single syscall well below the limit while
 // still absorbing the largest curl chunk without splitting.
-constexpr std::size_t kMaxChunk = 4U * 1024U * 1024U;
+constexpr std::size_t kMaxChunk = std::size_t{4} * 1024 * 1024;
 
 bool utf8_to_wide(std::string_view utf8, std::wstring& out) {
     if (utf8.empty() || utf8.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {

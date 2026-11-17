@@ -56,8 +56,10 @@ inline bool offset_range_valid(FileOffset offset, std::size_t size) noexcept {
 //   * a zero-byte return is an error, never a retry: on a positional read it means end-of-file, on
 //   a
 //     write it means the filesystem made no progress.
+// The callable is taken by value: io_all invokes it once per attempt, so a forwarding reference
+// would either never be forwarded or be moved from repeatedly.
 template <typename AttemptFn>
-IoOutcome io_all(FileOffset offset, std::size_t size, StorageError failure, AttemptFn&& attempt) {
+IoOutcome io_all(FileOffset offset, std::size_t size, StorageError failure, AttemptFn attempt) {
     IoOutcome outcome;
     int attempts_without_progress = 0;
     while (outcome.transferred < size) {

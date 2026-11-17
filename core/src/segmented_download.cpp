@@ -72,7 +72,7 @@ long parse_status_line(std::string_view line) {
         if (character < '0' || character > '9') {
             return 0;
         }
-        value = value * 10 + (character - '0');
+        value = (value * 10) + (character - '0');
     }
     return value;
 }
@@ -256,7 +256,7 @@ SegmentedOutcome run_segmented(const DownloadOptions& options,
         return outcome;
     }
 
-    MultiHandle multi{curl_multi_init()};
+    const MultiHandle multi{curl_multi_init()};
     if (!multi) {
         summary.http.error = HttpError::internal;
         summary.message = "libcurl multi handle allocation failed";

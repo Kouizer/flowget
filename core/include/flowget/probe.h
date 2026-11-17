@@ -38,7 +38,7 @@ struct ProbeOptions {
     std::int64_t range_timeout_ms = 0;
     // Body bytes the ranged GET may deliver before the sink aborts it. Only reached when the server
     // ignores `Range` and starts streaming the whole file; a 206 answer sends a single byte.
-    std::int64_t body_limit_bytes = 64 * 1024;
+    std::int64_t body_limit_bytes = std::int64_t{64} * 1024;
 };
 
 struct ProbeResult {

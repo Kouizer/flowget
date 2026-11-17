@@ -50,7 +50,7 @@ bool parse_offset(std::string_view text, std::int64_t& out) {
         if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U) {
             return false;
         }
-        value = value * 10U + digit;
+        value = (value * 10U) + digit;
     }
     if (value > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
         return false;

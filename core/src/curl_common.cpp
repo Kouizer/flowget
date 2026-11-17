@@ -68,8 +68,6 @@ HttpError map_curl_error(CURLcode code) {
     case CURLE_ABORTED_BY_CALLBACK:
     case CURLE_WRITE_ERROR:
         return HttpError::aborted;
-    case CURLE_OUT_OF_MEMORY:
-        return HttpError::internal;
     default:
         return HttpError::internal;
     }

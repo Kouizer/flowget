@@ -14,7 +14,7 @@ constexpr int kMaxConnections = 64;
 
 // Minimum useful piece size. Smaller pieces multiply request overhead and leave the dynamic
 // splitter (S7) nothing to work with.
-constexpr FileOffset kMinSegmentSize = 1024 * 1024;
+constexpr FileOffset kMinSegmentSize = FileOffset{1024} * 1024;
 
 struct Segment {
     FileOffset offset = 0;

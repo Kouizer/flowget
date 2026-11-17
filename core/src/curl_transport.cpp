@@ -87,8 +87,8 @@ public:
         context.sink = &sink;
         context.cancel = cancel;
 
-        detail::MultiHandle multi{curl_multi_init()};
-        detail::EasyHandle easy{curl_easy_init()};
+        const detail::MultiHandle multi{curl_multi_init()};
+        const detail::EasyHandle easy{curl_easy_init()};
         if (!multi || !easy) {
             result.error = HttpError::internal;
             result.message = "libcurl handle allocation failed";

@@ -46,7 +46,7 @@ using HeaderList = std::unique_ptr<curl_slist, ListDeleter>;
 // 256 KiB receive buffer: one libcurl read covers a full 256 KiB segment minimum, so a 64 MiB/s
 // download does not pay for four thousand 16 KiB callbacks per second. Larger buffers would raise
 // per-connection memory without changing throughput (the write syscall budget stays the same).
-constexpr long kReceiveBufferSize = 256 * 1024;
+constexpr long kReceiveBufferSize = long{256} * 1024;
 
 // Stable mapping from libcurl codes to the public HttpError taxonomy. Shared so a segment failure
 // and a single-stream failure classify identically.
