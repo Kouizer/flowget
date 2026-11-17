@@ -480,6 +480,10 @@ yalnız "gürültüyü kes + gerçek bulguları düzelt" işini yapar; kalan bul
       (linux-x64 debug, ASan/UBSan, TSan) PASSED; aynı çalıştırmada `clang-tidy: 6 finding(s) in
       18 file(s); baseline 6 -> OK`. Baseline gate negatif testi: baseline 5 yapıldığında script
       exit 2 + "EXCEEDED by 1" verdi, `check_linux` yine PASSED (advisory) — beklenen davranış.
+- [x] Kanıt (CI, 2026-11-17): GitHub Actions **run #13**, commit `9a5b417` — Windows (MSVC), Linux
+      (Clang, ASan/UBSan) ve `policy` job'larının üçü de yeşil. CI'daki clang-tidy adımı **6 bulgu**
+      verdi = baseline 6, yani gate "yeni bulgu yok" kuralını tutuyor; `continue-on-error` S8'e kadar
+      advisory kalıyor.
 
 ### S7 — DynamicSplitter + benchmark tablosu
 
@@ -495,6 +499,9 @@ sıra ısınma/önbellek etkisini ayırmaz); sonuçlar `## Ölçüm ve kanıt ta
 ### S8 — HashVerifier + hata modeli + CLI bayrakları + RSS ölçümü
 
 - [ ] Windows'a özel dosyalar (`storage_win32.cpp` vb.) Linux CI clang-tidy kapsamı dışında.
+- [ ] CI action sürümleri: `actions/checkout`, `actions/cache`, `ilammy/msvc-dev-cmd` için Node 24
+      destekleyen güncel sürümleri her action'ın Releases sayfasından kontrol edip güncelle
+      (Node 20 deprecation uyarısı, run #13).
 
 ### Tasarım
 - [ ] **S4'ün ilk maddesi:** `SingleStreamDownloader`'ı `IStorage`'a taşı, ASCII olmayan hedef yolla test
