@@ -64,7 +64,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S2 | Probe (HEAD / `Range: bytes=0-0`, 206/200/416, metadata) | **TAMAMLANDI** |
 | S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | **TAMAMLANDI** |
-| S4b | S4b-lite: clang-tidy dosya listesi + gerçek bulgular + baseline (`--warnings-as-errors` S8'e ertelendi) | |
+| S4b | S4b-lite: clang-tidy dosya listesi + gerçek bulgular + baseline (`--warnings-as-errors` S8'e ertelendi) | **TAMAMLANDI** |
 | S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | |
 | S6 | `RetryPolicy` + `RateLimiter` | |
 | S7 | `DynamicSplitter` + benchmark tablosu | |
