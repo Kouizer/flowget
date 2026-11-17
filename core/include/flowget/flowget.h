@@ -34,6 +34,9 @@ extern "C" {
 #define FLOWGET_API
 #endif
 
+// This header is consumed by C clients (docs/adr/0002): the C++ `using` form would break the C ABI
+// contract, so the typedef stays.
+// NOLINTNEXTLINE(modernize-use-using): header must remain valid C
 typedef enum flowget_status {
     FLOWGET_STATUS_OK = 0,
     FLOWGET_STATUS_INVALID_ARGUMENT = 1,

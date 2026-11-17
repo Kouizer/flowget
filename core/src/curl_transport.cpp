@@ -2,6 +2,7 @@
 
 #include "curl_common.h"
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -28,7 +29,7 @@ std::size_t on_header(char* buffer, std::size_t size, std::size_t count, void* u
 
     // A new status line starts the headers of a new response (redirect chain): keep only the final
     // response's headers, because those describe the body we are writing.
-    if (line.rfind("HTTP/", 0) == 0) {
+    if (line.starts_with("HTTP/")) {
         context->headers.clear();
         return total;
     }
@@ -103,9 +104,10 @@ public:
             return result;
         }
 
-        char error_buffer[CURL_ERROR_SIZE] = {};
+        std::array<char, CURL_ERROR_SIZE> error_buffer{};
         CURL* handle = easy.get();
-        if (!detail::configure_easy(handle, request, error_buffer, outgoing_headers->get())) {
+        if (!detail::configure_easy(
+                handle, request, error_buffer.data(), outgoing_headers->get())) {
             result.error = HttpError::internal;
             result.message = "invalid byte range";
             return result;
@@ -143,6 +145,9 @@ public:
         int queued = 0;
         while (const CURLMsg* message = curl_multi_info_read(multi.get(), &queued)) {
             if (message->msg == CURLMSG_DONE) {
+                // libcurl's CURLMsg::data is a union by design; `result` is the documented member
+                // after CURLMSG_DONE and has no variant equivalent.
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
                 transfer_code = message->data.result;
             }
         }
@@ -193,7 +198,7 @@ public:
 
         result.error = detail::map_curl_error(transfer_code);
         if (error_buffer[0] != '\0') {
-            result.message = error_buffer;
+            result.message = error_buffer.data();
         } else {
             result.message = curl_easy_strerror(transfer_code);
         }

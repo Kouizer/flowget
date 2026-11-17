@@ -118,6 +118,14 @@ public:
         close();
     }
 
+    // The file handle has exactly one owner: copying would close it twice, moving would leave the
+    // source pointing at a handle it no longer owns. Storage is created and held through IStorage
+    // (see create_storage), so neither operation is ever needed.
+    Win32Storage(const Win32Storage&) = delete;
+    Win32Storage& operator=(const Win32Storage&) = delete;
+    Win32Storage(Win32Storage&&) = delete;
+    Win32Storage& operator=(Win32Storage&&) = delete;
+
     StorageResult open(const std::string& utf8_path, OpenMode mode) override {
         if (handle_ != INVALID_HANDLE_VALUE) {
             return detail::make_storage_error(

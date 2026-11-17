@@ -7,6 +7,7 @@
 #include "download_util.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -40,7 +41,7 @@ struct Transfer {
     bool added = false;
     bool finished = false;
     CURLcode result = CURLE_OK;
-    char error_buffer[CURL_ERROR_SIZE] = {};
+    std::array<char, CURL_ERROR_SIZE> error_buffer{};
 
     // Per-response metadata, reset by a new status line (redirect chain).
     long status = 0;
@@ -130,7 +131,7 @@ std::size_t on_header(char* buffer, std::size_t size, std::size_t count, void* u
     const std::size_t total = size * count;
     const std::string_view line{buffer, total};
 
-    if (line.rfind("HTTP/", 0) == 0) {
+    if (line.starts_with("HTTP/")) {
         transfer.status = parse_status_line(line);
         transfer.headers_complete = false;
         transfer.content_length = -1;
@@ -310,8 +311,10 @@ SegmentedOutcome run_segmented(const DownloadOptions& options,
         request.user_agent = options.user_agent;
         request.range_start = segment.offset;
         request.range_length = segment.length;
-        if (!configure_easy(
-                transfer->easy.get(), request, transfer->error_buffer, outgoing_headers->get())) {
+        if (!configure_easy(transfer->easy.get(),
+                            request,
+                            transfer->error_buffer.data(),
+                            outgoing_headers->get())) {
             setup_failed = true;
             break;
         }
@@ -382,6 +385,9 @@ SegmentedOutcome run_segmented(const DownloadOptions& options,
                 continue;
             }
             Transfer& transfer = *iterator->second;
+            // libcurl's CURLMsg::data is a union by design; `result` is the documented member after
+            // CURLMSG_DONE and has no variant equivalent.
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
             transfer.result = message->data.result;
             transfer.finished = true;
             curl_multi_remove_handle(multi.get(), message->easy_handle);
@@ -455,7 +461,7 @@ SegmentedOutcome run_segmented(const DownloadOptions& options,
         if (transfer->result != CURLE_OK) {
             summary.http.error = map_curl_error(transfer->result);
             summary.message = transfer->error_buffer[0] != '\0'
-                                  ? std::string{transfer->error_buffer}
+                                  ? std::string{transfer->error_buffer.data()}
                                   : curl_easy_strerror(transfer->result);
             return outcome;
         }

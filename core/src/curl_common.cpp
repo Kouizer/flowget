@@ -11,8 +11,7 @@ namespace {
 
 // Converts request.timeout_ms into a `long` without overflowing it on LLP64, where long is 32-bit.
 long clamp_timeout(std::int64_t timeout_ms) {
-    constexpr std::int64_t kMaxTimeout =
-        static_cast<std::int64_t>(std::numeric_limits<long>::max());
+    constexpr auto kMaxTimeout = static_cast<std::int64_t>(std::numeric_limits<long>::max());
     return static_cast<long>(std::min<std::int64_t>(timeout_ms, kMaxTimeout));
 }
 
@@ -81,7 +80,8 @@ std::string header_value(const std::map<std::string, std::string>& headers, std:
 std::optional<HeaderList> make_header_list(const std::map<std::string, std::string>& headers) {
     HeaderList list;
     for (const auto& [name, value] : headers) {
-        const std::string line = name + ": " + value;
+        std::string line{name};
+        line.append(": ").append(value);
         // curl_slist_append takes ownership only on success; release first so a failed append frees
         // whatever was already built instead of leaking it.
         curl_slist* head = list.release();

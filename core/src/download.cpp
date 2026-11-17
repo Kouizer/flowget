@@ -11,8 +11,8 @@ double DownloadProgress::fraction() const {
     if (total_bytes <= 0) {
         return 0.0;
     }
-    const double written = static_cast<double>(bytes_written);
-    const double total = static_cast<double>(total_bytes);
+    const auto written = static_cast<double>(bytes_written);
+    const auto total = static_cast<double>(total_bytes);
     return std::clamp(written / total, 0.0, 1.0);
 }
 

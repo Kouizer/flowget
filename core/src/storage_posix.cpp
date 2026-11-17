@@ -56,6 +56,14 @@ public:
         close();
     }
 
+    // The file descriptor has exactly one owner: copying would close it twice, moving would leave
+    // the source pointing at a descriptor it no longer owns. Storage is created and held through
+    // IStorage (see create_storage), so neither operation is ever needed.
+    PosixStorage(const PosixStorage&) = delete;
+    PosixStorage& operator=(const PosixStorage&) = delete;
+    PosixStorage(PosixStorage&&) = delete;
+    PosixStorage& operator=(PosixStorage&&) = delete;
+
     StorageResult open(const std::string& utf8_path, OpenMode mode) override {
         if (fd_ >= 0) {
             return detail::make_storage_error(
@@ -100,7 +108,8 @@ public:
         }
         const std::string path = path_;
         const OpenMode mode = mode_;
-        const StorageResult closed = close();
+        // Not const: returning a const local forces a copy instead of a move.
+        StorageResult closed = close();
         if (!closed.ok()) {
             return closed;
         }

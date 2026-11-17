@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <new>
+#include <string_view>
 #include <utility>
 
 #include <openssl/evp.h>
@@ -10,7 +11,7 @@
 namespace flowget {
 namespace {
 
-constexpr char kHexDigits[] = "0123456789abcdef";
+constexpr std::string_view kHexDigits = "0123456789abcdef";
 
 // SHA-256 always produces 32 bytes; EVP_MAX_MD_SIZE leaves room for larger digests.
 constexpr unsigned int kSha256DigestLength = 32;
@@ -18,12 +19,11 @@ constexpr unsigned int kSha256DigestLength = 32;
 } // namespace
 
 struct Sha256::Impl {
-    EVP_MD_CTX* context = nullptr;
+    EVP_MD_CTX* context;
     bool finished = false;
     bool failed = false;
 
-    Impl() {
-        context = EVP_MD_CTX_new();
+    Impl() : context(EVP_MD_CTX_new()) {
         if (context == nullptr) {
             failed = true;
             return;
@@ -41,6 +41,8 @@ struct Sha256::Impl {
 
     Impl(const Impl&) = delete;
     Impl& operator=(const Impl&) = delete;
+    Impl(Impl&&) = delete;
+    Impl& operator=(Impl&&) = delete;
 };
 
 Sha256::Sha256() {
@@ -93,6 +95,9 @@ std::string Sha256::hex_digest() {
     std::string result;
     result.reserve(static_cast<std::size_t>(length) * 2);
     for (unsigned int index = 0; index < length; ++index) {
+        // `index` is bounded by `length`, the digest size EVP just reported, so this subscript
+        // cannot escape the array; `.at()` would add a throw path for no reachable case.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
         const auto byte = static_cast<unsigned int>(digest[index]);
         result.push_back(kHexDigits[(byte >> 4) & 0x0FU]);
         result.push_back(kHexDigits[byte & 0x0FU]);

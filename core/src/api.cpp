@@ -36,6 +36,9 @@ uint32_t flowget_api_version(void) {
 
 const char* flowget_status_name(flowget_status status) {
     const auto index = static_cast<std::size_t>(status);
+    // The bound is checked on this line and `back()` covers every out-of-range value; the
+    // alternative, `.at()`, would throw across the C ABI that promises it never does.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
     return index < kStatusNames.size() ? kStatusNames[index].data() : kStatusNames.back().data();
 }
 
