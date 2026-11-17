@@ -95,7 +95,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang clang-tidy curl zip unzip tar
+          sudo apt-get install -y ninja-build clang clang-tidy-18 curl zip unzip tar
           # Named explicitly so a missing generator fails here with a clear message instead of
           # surfacing as "CMAKE_MAKE_PROGRAM is not set" inside a later configure step.
           ninja --version
@@ -151,11 +151,11 @@ jobs:
       - name: pre-commit (clang-format + hygiene, pinned versions)
         run: pipx run pre-commit run --all-files --show-diff-on-failure
 
-      # Advisory until M1: clang-tidy's diagnostics differ between toolchain versions, and this job
-      # cannot be validated locally against the CI image. It becomes blocking once the M1 baseline
-      # is clean.
-      - name: clang-tidy (advisory)
+      # Advisory until M1/S8: findings are compared against scripts/clang_tidy_baseline.txt, so new
+      # code cannot silently add findings while the check itself stays non-blocking. The file list
+      # comes from compile_commands.json, so this Linux job never asks for Windows-only sources.
+      - name: clang-tidy (advisory, baseline gate)
         continue-on-error: true
         run: |
-          clang-tidy --version
-          git ls-files 'core/*.cpp' 'cli/*.cpp' | xargs clang-tidy -p build/linux-x64
+          clang-tidy-18 --version
+          python3 scripts/clang_tidy.py --build-dir build/linux-x64

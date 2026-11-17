@@ -10,7 +10,7 @@
        are excluded on both ends: the WSL side keeps its CMake/vcpkg/FetchContent caches and its
        own Git metadata, so a sync never throws away a warm build tree.
     2. Run `linux-x64` (debug), `linux-x64-asan` (ASan/UBSan) and `linux-x64-tsan` (ThreadSanitizer)
-       configure, build and ctest through `wsl -d Ubuntu -- bash -lc`.
+       configure, build and ctest through `wsl -d Ubuntu -- bash <file>`.
 
     Why bother: MSVC and Clang reject different code with -Werror on. Diagnostics such as
     -Wunused-lambda-capture or -Wsign-conversion are Clang-only, so a green Windows build says
@@ -34,6 +34,11 @@
       just-updated timestamp stale, which made rsync skip a fresh edit while ninja then reported
       "no work to do" - a green result for old sources. mtimes still propagate from the source
       (-a) so ninja rebuilds exactly the files that were transferred.
+    * clang-tidy runs after the linux-x64 build, using the file list from compile_commands.json so
+      platform-specific sources (storage_win32.cpp) are never requested on Linux. It is advisory:
+      findings above the baseline in scripts/clang_tidy_baseline.txt are reported, not turned into a
+      failure of this script (the divergence is intentional until S8). Only a tool error - missing
+      clang-tidy-18, missing database, empty file list - stops the run.
 
 .PARAMETER Distro
     WSL distribution name. Default: Ubuntu.
@@ -117,10 +122,10 @@ try {
     Write-Host "==> WSL distro '$Distro'" -ForegroundColor Cyan
     Invoke-WslScript -FailureMessage "Cannot run a shell inside the WSL distro '$Distro' (check 'wsl -l -v')" -Script @'
 set -e
-for tool in cmake ctest ninja clang++ rsync; do
+for tool in cmake ctest ninja clang++ clang-tidy-18 rsync; do
     command -v $tool > /dev/null || {
         echo "error: '$tool' is missing on the Linux side."
-        echo '       CI installs the toolchain with: sudo apt-get install -y ninja-build clang'
+        echo '       CI installs the toolchain with: sudo apt-get install -y ninja-build clang clang-tidy-18'
         exit 1
     }
 done
@@ -169,6 +174,18 @@ echo '=== linux-x64: build ==='
 cmake --build --preset linux-x64
 echo '=== linux-x64: ctest ==='
 ctest --test-dir build/linux-x64 --output-on-failure
+
+echo '=== clang-tidy: advisory baseline gate ==='
+set +e
+python3 scripts/clang_tidy.py --build-dir build/linux-x64
+tidy_status=$?
+set -e
+if [ "$tidy_status" -eq 2 ]; then
+    echo 'warning: clang-tidy findings exceed scripts/clang_tidy_baseline.txt (new findings are not allowed)'
+elif [ "$tidy_status" -ne 0 ]; then
+    echo "error: clang-tidy could not run (exit code $tidy_status)"
+    exit "$tidy_status"
+fi
 
 echo '=== linux-x64-asan: configure ==='
 cmake --preset linux-x64-asan
