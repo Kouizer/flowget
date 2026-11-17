@@ -481,6 +481,21 @@ yalnız "gürültüyü kes + gerçek bulguları düzelt" işini yapar; kalan bul
       18 file(s); baseline 6 -> OK`. Baseline gate negatif testi: baseline 5 yapıldığında script
       exit 2 + "EXCEEDED by 1" verdi, `check_linux` yine PASSED (advisory) — beklenen davranış.
 
+### S7 — DynamicSplitter + benchmark tablosu
+
+#### S7 karşılaştırma tabanı (2026-11-16, Windows, 100MB.zip, download.thinkbroadband.com, tek ölçüm)
+- `curl.exe`: 6,29 sn
+- FlowGet `--connections 1`: 5,70 sn
+- FlowGet `--connections 8`: 3,66 sn
+- SHA-256 hash'ler 1 ve 8 bağlantıda aynı, indirilen boyut 104857600 bayt.
+
+S7'de aynı komutlarla, **birkaç tekrarla ve ölçüm sırasını değiştirerek** yeniden ölç (tek ölçüm ve sabit
+sıra ısınma/önbellek etkisini ayırmaz); sonuçlar `## Ölçüm ve kanıt tablosu`na işlenir.
+
+### S8 — HashVerifier + hata modeli + CLI bayrakları + RSS ölçümü
+
+- [ ] Windows'a özel dosyalar (`storage_win32.cpp` vb.) Linux CI clang-tidy kapsamı dışında.
+
 ### Tasarım
 - [ ] **S4'ün ilk maddesi:** `SingleStreamDownloader`'ı `IStorage`'a taşı, ASCII olmayan hedef yolla test
       et (bugün `ofstream` + `path.string()` ANSI kod sayfası kullanır; `tasks/todo.md` S3 kararı).
@@ -606,6 +621,26 @@ yoluna yönlendiriliyor (M5 sonrası tam), HLS sayfasında m3u8 yakalanıyor.
 ---
 
 ## M5 — yt-dlp + HLS/DASH + FFmpeg (≈3 hafta)
+
+### M5 ön koşul: Üçüncü taraf araçlar ve lisans ADR'si (docs/adr/0007)
+
+Karar: bu araçlar koda gömülmez, ayrı program (sidecar) olarak paketlenir. `docs/adr/0007-*.md` henüz
+yok; M5'in ilk işi bu ADR'yi yazmak (araç başına karar + gerekçe + lisans).
+
+- [ ] yt-dlp (Unlicense): video sitesi indirme, ayrı süreç. Windows `.exe` içindeki bileşen
+      lisanslarını kontrol et.
+- [ ] FFmpeg (LGPL veya GPL, derlemeye göre): yalnızca LGPL derlemesi, ayrı program. x264 vb. içeren
+      GPL derlemesi yasak.
+- [ ] QuickJS-NG (MIT): yt-dlp bazı sitelerde JS çalıştırıcıya ihtiyaç duyabilir; M5 başında gerekip
+      gerekmediğini doğrula.
+- [ ] N_m3u8DL-RE (MIT): HLS/DASH için hazır araç. ADR'de "kendi motorumuzu yaz" ile "sidecar kullan"
+      seçeneklerini kıyasla; Android'de çalışıp çalışmadığına dikkat et.
+- [ ] Her sidecar için sürüm sabitleme ve SHA-256 doğrulama.
+- [ ] `docs/THIRD_PARTY_NOTICES`: ad, sürüm, lisans, kaynak.
+- [ ] Paketlenen sidecar'larda GPL/AGPL denylist kontrolü (ADR-0004).
+
+**Kapsam dışı:** Ghost Downloader 3 ve cat-catch GPL-3.0; koddan hiçbir şey alınmaz. Torrent ve eD2k
+v1 kapsamında değil.
 
 - [ ] `YtDlpSupervisor`: süreç başlatma, `-J` ile metadata, ilerleme parse (`--newline --progress`),
       iptal, Windows Job Object ile çocuk süreç temizliği, sürüm kontrolü + güncelleme
