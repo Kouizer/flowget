@@ -176,11 +176,13 @@ std::size_t on_body(char* buffer, std::size_t size, std::size_t count, void* use
     }
 
     std::size_t written = 0;
-    const StorageResult result =
-        transfer.storage->write_at(transfer.segment.offset + transfer.written,
-                                   reinterpret_cast<const std::byte*>(buffer),
-                                   total,
-                                   written);
+    const StorageResult result = transfer.storage->write_at(
+        transfer.segment.offset + transfer.written,
+        // libcurl hands the body over as char*; IStorage takes bytes.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): C callback boundary
+        reinterpret_cast<const std::byte*>(buffer),
+        total,
+        written);
     transfer.written += static_cast<std::int64_t>(written);
     if (!result.ok()) {
         transfer.io_error =

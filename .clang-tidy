@@ -1,27 +1,50 @@
-Checks: >
-  -*,
-  bugprone-*,
-  clang-analyzer-*,
-  cppcoreguidelines-*,
-  misc-*,
-  modernize-*,
-  performance-*,
-  portability-*,
-  readability-*,
+# clang-tidy policy. `Checks` is a YAML sequence so every disabled check can carry its reason on the
+# same entry; clang-tidy joins the items with commas.
+Checks:
+  - '-*'
+  - bugprone-*
+  - clang-analyzer-*
+  - cppcoreguidelines-*
+  - misc-*
+  - modernize-*
+  - performance-*
+  - portability-*
+  - readability-*
 
-  -bugprone-easily-swappable-parameters,
-  -cppcoreguidelines-avoid-magic-numbers,
-  -cppcoreguidelines-avoid-do-while,
-  -cppcoreguidelines-macro-usage,
-  -cppcoreguidelines-owning-memory,
-  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
-  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
-  -cppcoreguidelines-pro-type-vararg,
-  -misc-non-private-member-variables-in-classes,
-  -modernize-use-trailing-return-type,
-  -readability-identifier-length,
-  -readability-magic-numbers,
-  -readability-qualified-auto
+  # FlowGet passes user-supplied values (URL, path, size, timeout) through public APIs; adjacent
+  # parameters of the same type are part of the contract, not an accident.
+  - '-bugprone-easily-swappable-parameters'
+  # Magic numbers are part of protocol constants (HTTP codes, buffer sizes) and are reviewed in
+  # context; the check only adds noise here.
+  - '-cppcoreguidelines-avoid-magic-numbers'
+  # `do { } while (false)` is not used as a control-flow construct.
+  - '-cppcoreguidelines-avoid-do-while'
+  # Preprocessor use is limited to platform selection; the check cannot tell that apart from abuse.
+  - '-cppcoreguidelines-macro-usage'
+  # Ownership is expressed with RAII wrappers (unique_ptr, custom deleters), not gsl::owner.
+  - '-cppcoreguidelines-owning-memory'
+  # C APIs (libcurl, Win32, POSIX) hand out pointers and expect array/pointer arithmetic; wrapping
+  # every call site in spans would add noise without safety.
+  - '-cppcoreguidelines-pro-bounds-array-to-pointer-decay'
+  - '-cppcoreguidelines-pro-bounds-pointer-arithmetic'
+  # Variadic C APIs (printf-style) are used only for logging through spdlog.
+  - '-cppcoreguidelines-pro-type-vararg'
+  # Data types are intentionally aggregates with public fields (DownloadOptions, ProbeResult).
+  - '-misc-non-private-member-variables-in-classes'
+  # The project uses the C++ Core Guidelines but keeps the established `type name` return style.
+  - '-modernize-use-trailing-return-type'
+  # Short names (`fd`, `id`, `i`) are meaningful in the platform and bit-twiddling code.
+  - '-readability-identifier-length'
+  # Magic numbers are allowed where protocol constants are clearer inline (see above).
+  - '-readability-magic-numbers'
+  # `auto` is used when the type is obvious from the initializer; spelling it is also fine.
+  - '-readability-qualified-auto'
+  # IWYU-style include analysis is noisy for third-party headers (libcurl pulls windows.h) and for
+  # platform headers; include hygiene is handled separately, not by clang-tidy.
+  - '-misc-include-cleaner'
+  # Enum size is dictated by the C ABI and the on-disk/JSON formats; changing the underlying type is
+  # a design decision, not a mechanical fix.
+  - '-performance-enum-size'
 
 WarningsAsErrors: ''
 HeaderFilterRegex: '(core|cli|tests)/.*\.(h|hpp)$'
@@ -36,15 +59,34 @@ CheckOptions:
     value: CamelCase
   - key: readability-identifier-naming.EnumCase
     value: CamelCase
+  # C++ enum values in FlowGet are lower_case (`StorageError::none`, `OpenMode::read_write`); the C
+  # ABI keeps UPPER_CASE constants (`FLOWGET_STATUS_OK`) and a lower_case tag (`flowget_status`).
+  # IgnoredRegexp must match the whole (qualified) name, so unanchored substrings are not enough.
   - key: readability-identifier-naming.EnumConstantCase
-    value: CamelCase
+    value: lower_case
+  - key: readability-identifier-naming.EnumConstantIgnoredRegexp
+    value: '.*FLOWGET_.*'
+  - key: readability-identifier-naming.EnumIgnoredRegexp
+    value: '.*flowget_.*'
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
   - key: readability-identifier-naming.VariableCase
     value: lower_case
   - key: readability-identifier-naming.PrivateMemberSuffix
     value: '_'
+  # Real constants (global, static, constexpr) keep the kCamelCase style.
   - key: readability-identifier-naming.ConstantCase
     value: CamelCase
   - key: readability-identifier-naming.ConstantPrefix
     value: 'k'
+  # Local `const` helpers are ordinary variables that happen to be immutable: no k-prefix. Without
+  # these two overrides every `const std::size_t total` would need to become `kTotal`.
+  - key: readability-identifier-naming.LocalConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.LocalConstantPrefix
+    value: ''
+  # clang-tidy 18 has no constexpr-specific naming option, so local constexpr constants (kMaxTimeout)
+  # are exempt from the lower_case rule instead of being renamed; global and static constants keep
+  # the enforced kCamelCase style above.
+  - key: readability-identifier-naming.LocalConstantIgnoredRegexp
+    value: 'k[A-Z].*'

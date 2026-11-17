@@ -52,6 +52,8 @@ std::size_t on_body(char* buffer, std::size_t size, std::size_t count, void* use
     if (context->sink == nullptr) {
         return total;
     }
+    // libcurl hands the body over as char*; BodySink takes std::byte* because the bytes are opaque.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): C callback boundary
     if (!(*context->sink)(reinterpret_cast<const std::byte*>(buffer), total)) {
         return 0; // Returning a short count aborts the transfer (CURLE_WRITE_ERROR).
     }
