@@ -372,3 +372,16 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
 - Tekrarını önleyen kontrol: commit öncesi `git status -sb` çıktısında `ahead/behind` yoksa
   (HEAD == origin/main) amend/`rebase -i` yapılmaz. Push sonrası `git log --oneline origin/main..HEAD`
   boş olmalı; doluysa yeni commit'ler push edilmemiş demektir, geçmiş değiştirilmez.
+
+### 2026-11-17 — clang-tidy `IgnoredRegexp` tam (qualified) adla eşleşir
+- Belirti: `.clang-tidy` içinde `EnumConstantIgnoredRegexp: ^FLOWGET_` ve
+  `LocalConstantIgnoredRegexp: ^k[A-Z]` ayarlıydı, ama aynı bulgular (C ABI enum'ları, `kMaxTimeout`)
+  üretilmeye devam etti; toplam yalnız 51'e düştü.
+- Kök neden: `readability-identifier-naming` seçeneklerindeki `IgnoredRegexp` desenleri **tam adla**
+  (`std::regex_match`) karşılaştırılır, `regex_search` ile değil. `^FLOWGET_` yalnız başlangıcı
+  sabitler; adın kalanı eşleşmediği için kural uygulanır. clang-tidy 18'de constexpr'e özel naming
+  ayarı da yok.
+- Düzeltme: desenler `.*FLOWGET_.*`, `.*flowget_.*`, `k[A-Z].*` olarak sarıldı; 51 -> 36.
+- Tekrarını önleyen kontrol: yeni naming seçeneği eklerken tek dosyalık bir örnekle
+  `clang-tidy --config-file=...` çalıştırıp desenin gerçekten bastırdığını gör; "ayar var" demekle
+  yetinme, toplam sayının düştüğünü ölç.
