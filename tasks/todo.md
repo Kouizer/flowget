@@ -65,7 +65,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | **TAMAMLANDI** |
 | S4b | S4b-lite: clang-tidy dosya listesi + gerçek bulgular + baseline (`--warnings-as-errors` S8'e ertelendi) | **TAMAMLANDI** |
-| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | **S5a-1 TAMAMLANDI** — S5a-2 sırada |
+| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | **S5a-1 TAMAMLANDI** — S5a-2a/2b planlandı, onay bekliyor |
 | S6 | `RetryPolicy` + `RateLimiter` | |
 | S7 | `DynamicSplitter` + benchmark tablosu | |
 | S8 | `HashVerifier` + hata modeli + CLI bayrakları + RSS ölçümü | |
@@ -485,7 +485,7 @@ yalnız "gürültüyü kes + gerçek bulguları düzelt" işini yapar; kalan bul
       verdi = baseline 6, yani gate "yeni bulgu yok" kuralını tutuyor; `continue-on-error` S8'e kadar
       advisory kalıyor.
 
-### S5 — Resume (`.flowget` sidecar, checkpoint, ETag/Last-Modified) — **PLAN, ONAYLANDI (2026-11-17)**
+### S5 — Resume (`.flowget` sidecar, checkpoint, ETag/Last-Modified) — **PLAN, ONAYLANDI (2026-11-17); S5a-2 bölünmesi ONAY BEKLİYOR (2026-11-19)**
 
 **Hedef:** Kesilen indirme, dosya ve sunucu değişmediyse kaldığı yerden devam eder; değiştiyse sessizce
 bozuk dosya üretmez, baştan indirir. M1'de JSON sidecar; M2'de SQLite'a taşınır.
@@ -599,23 +599,189 @@ bozuk dosya üretmez, baştan indirir. M1'de JSON sidecar; M2'de SQLite'a taşı
       ilk `vcpkg install` 8,3 s, sonrası binary cache (0,7 ms); link/runtime maliyeti yok.
 - [x] `py -m pre_commit run --all-files` temiz; commit `S5a-1`.
 
-#### S5a-2 — motor + CLI entegrasyonu
+#### S5a-2 — motor + CLI entegrasyonu (iki dilime bölündü, **PLAN — ONAY BEKLİYOR**)
 
-- [ ] `DownloadOptions::resume` (varsayılan `true`) + `DownloadSummary` alanları: `resumed`,
-      `resumed_from_bytes`, `resume_note`.
-- [ ] Motor: `done`'dan kalan aralık, `If-Range`, checkpoint (2 s + olaylar), sidecar silme.
-- [ ] `Downloader`: sidecar oku → doğrula → probe ile karşılaştır → devam/baştan; `.tmp` temizliği;
-      fallback/hata yolunda sidecar silme.
-- [ ] CLI: `--no-resume`; `Resuming from X MiB` satırı.
-- [ ] **Ctrl+C:** bugün `run_get` `download(...)`'a cancel jetonu geçmiyor (`cancel = nullptr`). Windows
-      `SetConsoleCtrlHandler` (`CTRL_C_EVENT` + `CTRL_BREAK_EVENT`), POSIX `SIGINT` → `std::atomic<bool>`;
-      iptal `aborted` döner, checkpoint yazılır, çıkış kodu 130. İkinci Ctrl+C varsayılan davranışa döner.
-- [ ] Testler (entegrasyon): %40'ta iptal → sidecar → devam → içerik birebir; gerçek süreç öldürme
-      (Windows `TerminateProcess`, POSIX `SIGKILL`) → devam; **Windows'ta Ctrl+C (`CTRL_BREAK_EVENT` ile
-      ayrı süreç grubuna) → sonrasında `--resume` → SHA-256 eşit**; ETag/Last-Modified değişimi; zayıf
-      ETag → Last-Modified'a düşme; validator yok → resume yok; 200 dönüşü → sıfırdan; bozuk sidecar 5
-      varyantı; dosya silinmiş/boyut değişmiş; yanlış `Content-Length`.
-- [ ] Kanıt: build + `ctest`, `check_linux.ps1`, pre-commit, CLI e2e çıktısı (`Resuming from ...`).
+> S5a-2a çekirdeği (motor + `Downloader`) bitirir; S5a-2b yalnız CLI/Ctrl+C ve gerçek süreç testlerini
+> ekler. Her dilim ayrı commit + ayrı kanıt. S5a-2a'da süreç öldürme yok; iptal yalnız API'deki
+> `std::atomic<bool>` cancel jetonuyla tetiklenir.
+
+##### S5a-2a — motor + Downloader (ağ + sidecar), süreç öldürme yok
+
+**Amaç:** Geçerli sidecar + doğrulanmış kısmi dosya varsa yalnız eksik bayt aralıklarını indir; her
+checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiyse tek kez sıfırdan başlat.
+
+**Kararlar (uygulama ayrıntısı)**
+
+1. `DownloadOptions::resume = true` (varsayılan). `false` → sidecar + `.tmp` silinir, dosya truncate.
+2. `DownloadSummary`: `bool resumed`, `int64_t resumed_from_bytes`, `std::string resume_note`.
+3. Yeni `DownloadOptions::on_resume` (`std::function<void(int64_t)>`, fırlatmaz): resume kararı verilince
+   bir kez, ilk istekten önce çağrılır. CLI satırı S5a-2b'de bağlanır.
+4. Motor `SegmentTask { Segment range; int64_t done; }` alır; `done == length` olan aralık istek
+   açmadan tamam sayılır. İstek `start+done .. end-1`, uzunluk `length-done`.
+5. `If-Range`: güçlü ETag varsa ETag; yoksa `Last-Modified`; ikisi de yoksa başlık yok (ve resume
+   yapılmaz). Zayıf `W/` ETag `If-Range`'de kullanılmaz.
+6. Sidecar'ın `url` alanı **probe'un effective URL'i** olarak yazılır; resume'da yeni probe'un
+   effective URL'i ile karşılaştırılır (redirect hedefi değişirse sıfırdan).
+7. Checkpoint sırası değişmez: `storage->flush()` → başarılıysa `.flowget.tmp` yaz + flush →
+   atomik rename. **Veri flush'ı başarısızsa sidecar yayınlanmaz**; indirme `io` hatasıyla biter,
+   önceki sidecar olduğu gibi kalır.
+8. `done` yalnız `write_at` başarı döndürdükten sonra artar; checkpoint anı motor thread'inde,
+   uçuşta yazma yokken alınır (kilit gerekmez).
+9. Checkpoint tetikleri: 2 s periyot (sabit `2000 ms`), segment bitişi, iptal, hata, normal bitiş.
+   Yeni bayt yoksa periyodik checkpoint atlanır. Sidecar yazma hatası ölümcül değil: sonraki tetikte
+   yeniden denenir; iptal/hata anındaki son hata `resume_note`'a yazılır.
+10. Çıkış yolları:
+    - başarı: veri flush (zaten) → sidecar sil (silinemezse tamam sayılır, sonraki çalıştırma temizler);
+    - iptal: checkpoint yayınla → `aborted`; dosya + sidecar korunur;
+    - taşıma hatası: son checkpoint'i yayınlamayı dene → hata; dosya + sidecar korunur (S6 yeniden
+      denemesi ve S5b ölçümü buna dayanır);
+    - semantik fallback (range/ETag/Content-Range uyuşmazlığı): dosya + sidecar silinir, tek akış;
+    - resume geçersiz (`If-Range`'e 200): dosya + sidecar silinir, **bir kez** yeniden probe + taze
+      plan; taze deneme de 200 alırsa tek akışa düşer (döngü yok).
+    > Not: S5a-2 maddesindeki "fallback/hata yolunda sidecar silme" burada "dosyanın silindiği
+    > yollar" olarak netleştirildi; iptal/taşıma hatasında dosya korunduğu için sidecar da korunur.
+11. Resume yalnız segmentli yolda (`connections >= 2`) uygulanır; tek akış resume'u S5b. `resume=false`
+    her iki yolda da sidecar'ı siler.
+12. Sidecar okuma UTF-8 güvenli olmalı: `std::ifstream(path)` yerine `IStorage::open(read_only)` +
+    `read_at` kullanan `detail::read_file_utf8` (ASCII olmayan yol testi).
+13. `run_segmented` içine test seam'i: `StorageFactory` (varsayılan `make_platform_storage`) ve
+    `checkpoint_interval` (varsayılan 2000 ms, yalnız iç kullanım). Üretimde varsayılan değişmez.
+
+**Dosyalar**
+
+- [ ] `core/include/flowget/download.h` — `resume`, `on_resume`, summary alanları.
+- [ ] `core/src/segmented_download.{h,cpp}` — `SegmentTask`, `ResumeContext`, kalan aralık, `If-Range`,
+      checkpoint, resume-invalidated sonucu, `StorageFactory`/interval seam'i.
+- [ ] `core/src/resume_checkpoint.{h,cpp}` — `publish_resume_checkpoint(IStorage&, sidecar_path,
+      const ResumeState&, std::string& error)`: veri flush → sidecar atomik yaz; flush hatasında
+      sidecar'a dokunmaz.
+- [ ] `core/src/file_replace.{h,cpp}` (veya `file_io.{h,cpp}`) — `read_file_utf8` (boyut sınırı +
+      UTF-8 yol); `resume_sidecar_path` / `remove_stale_sidecar_temp` kullanımı.
+- [ ] `core/src/downloader.cpp` — sidecar oku → doğrula → probe karşılaştır → devam/baştan; tamam
+      kontrolü; `.tmp` temizliği; fallback/hata/başarı yollarında sidecar kararı.
+- [ ] `tests/unit/resume_state_test.cpp` — truncation/mutation fuzz (aşağıda).
+- [ ] `tests/unit/resume_checkpoint_test.cpp` — flush hatası invariantı.
+- [ ] `tests/integration/downloader_test.cpp` (veya yeni `resume_download_test.cpp`) — API + cancel
+      jetonu senaryoları.
+- [ ] `tests/CMakeLists.txt`, `core/CMakeLists.txt`.
+
+**Resume doğrulama sırası (`Downloader`)**
+
+1. `resume == false` → sidecar + `.tmp` sil; taze.
+2. Her durumda `.flowget.tmp` temizle.
+3. Sidecar yoksa taze.
+4. Boyut > 1 MiB / okunamıyor / parse hatası → sidecar sil, taze, `resume_note`.
+5. Tüm segmentler `done == length` ise: çıktı boyutu `total_bytes` ise **tamam** (ağ isteği yok,
+   sidecar sil, `resumed=true`, `resumed_from_bytes=total`, note `"already complete"`); değilse sil, taze.
+6. Probe. Sidecar `url` (effective) / `total_bytes` / güçlü ETag veya Last-Modified uyuşmuyorsa →
+   sil, taze, note (neden).
+7. Çıktı dosyası yok veya boyutu `total_bytes` değil → sil, taze.
+8. `bytes_done == 0` → resume'un kazancı yok: sil, taze.
+9. Aksi halde `SegmentTask`'ları kur, motoru `read_write` (asla truncate) + `preallocate(total)` ile
+   çalıştır; `on_resume(bytes_done)` çağır.
+
+**Testler (S5a-2a; süreç öldürme yok, API + cancel jetonu)**
+
+- [ ] **%40'ta iptal → resume:** throttle'lı yerel sunucu; progress callback bayt ≥ %40 olunca
+      `cancel=true`; `aborted`, sidecar var; ikinci `download` → `resumed=true`,
+      `resumed_from_bytes>0`, içerik SHA-256 birebir; sunucuya giden `Range` `done`'dan başlıyor,
+      `If-Range` doğru validator.
+- [ ] **Periyodik checkpoint:** >2 s süren throttle'lı indirme; iptalden önce sidecar en az bir kez
+      güncellenmiş (`done > 0`) ve içerik geçerli.
+- [ ] **Flush hatası sidecar'ı ilerletmez:** `publish_resume_checkpoint` sahte storage'ın `flush`'ı
+      hata döndürünce `false`; sidecar baytları **değişmez**, `.tmp` kalmaz. Ayrıca motor seviyesinde
+      `StorageFactory` ile enjekte edilen hata → `io` hatası, sidecar ilerlemez.
+- [ ] **`done` yalnız başarılı yazmadan sonra:** sahte storage N. yazmada hata; iptal/checkpoint
+      sonrası sidecar'daki `done`, başarıyla yazılan baytları aşmaz.
+- [ ] **ETag değişimi:** ikinci çalıştırmada sunucu yeni ETag/gövde → `resumed=false`, sıfırdan,
+      yeni içerik doğru, note nedeni taşır.
+- [ ] **Zayıf ETag → Last-Modified:** `ETag: W/"..."` + `Last-Modified`; resume çalışır, `If-Range`
+      Last-Modified taşır.
+- [ ] **Validator yok:** resume yok; sidecar silinir, sıfırdan.
+- [ ] **`If-Range`'e 200:** sunucu validator uyuşmayınca 200 döner → dosya + sidecar silinir, bir kez
+      yeniden probe + taze plan; içerik doğru; ikinci 200'de tek akışa düşer.
+- [ ] **Bozuk sidecar 5 varyantı:** geçersiz JSON, bilinmeyen `schema_version`, eksik alan,
+      bitişik olmayan segment, `done` aralık dışı → sidecar silinir, taze indirme, içerik doğru.
+- [ ] **Dosya silinmiş / boyut değişmiş:** taze indirme; eski sidecar silinir.
+- [ ] **Kenar 1 — sidecar yok + çıktı var:** çöp içerikli dosya truncate edilir, taze indirme,
+      içerik doğru.
+- [ ] **Kenar 2 — tüm segmentler done, sidecar silinmemiş:** boyut doğrulanır, ağ isteği yok,
+      tamam sayılır, sidecar silinir.
+- [ ] **Kenar 3 — `resume=false` mevcut sidecar'ı siler:** geçerli sidecar + kısmi dosya varken
+      `resume=false` → sidecar yok, dosya truncate, taze içerik.
+- [ ] **Yanlış `Content-Length`:** resume isteğinde segment `Content-Length` uyuşmazlığı → fallback
+      (tek akış) ve içerik doğru; sidecar silinmiş.
+- [ ] **Fuzz/truncation (S5a-1 parser'ı):** geçerli sidecar'ı **her bayt konumunda** kes ve rastgele
+      bayt boz (sabit tohum, örn. 1000 mutasyon); her girdi `parse_resume_state`'e verilir; çökme yok,
+      sonuç ya geçerli invariant'larla `ok()` ya da hata. `linux-x64-asan`/UBSan temiz.
+- [ ] **Performans (S5a-2a şartı):** 100 MB, 8 bağlantı, checkpoint açık; aynı komut/sunucu
+      (S7 baseline'ı `download.thinkbroadband.com/100MB.zip`, 3,66 s) ile en az 3 tekrar; medyan
+      **≤ ~3,84 s** (en fazla ~%5 yavaş). Sonuç `## Ölçüm ve kanıt tablosu`na işlenir. Baseline
+      makine/sunucu farklıysa aynı oturumda baseline yeniden ölçülür ve fark raporlanır.
+- [ ] Kanıt: MSVC build + `ctest`, `check_linux.ps1` (debug/ASan/TSan), `pre_commit`, clang-tidy
+      baseline 6 (yeni bulgu yok), performans ölçümü.
+
+##### S5a-2b — CLI, Ctrl+C, gerçek süreç testleri
+
+**Amaç:** Kullanıcı yüzeyi: `--no-resume`, resume bildirimi, Ctrl+C ile iptal; gerçek süreç öldürme ve
+Windows Ctrl+C sonrası devam.
+
+**CLI**
+
+- [ ] `get --no-resume` (değersiz bayrak) → `options.resume=false`; yardım metni.
+- [ ] `on_resume` bağlanır: `Resuming from %.1f MiB` (bayt / 1 MiB) `stderr`'e, ilk progress'ten önce.
+- [ ] Ctrl+C: `run_get` artık `cancel` jetonu geçirir.
+  - Windows: `SetConsoleCtrlHandler`; `CTRL_C_EVENT` + `CTRL_BREAK_EVENT`; ilk olayda yalnız
+    `std::atomic<bool>::store(true)` (ayrı thread; dosya/log/kilit yok) ve `TRUE`; ikinci olayda
+    `FALSE` → varsayılan davranış.
+  - POSIX: `sigaction(SIGINT)`; handler yalnız `std::atomic<bool>` (lock-free, `static_assert`) ve
+    `volatile sig_atomic_t` sayaç kullanır; ikinci sinyalde `SIG_DFL` + `raise(SIGINT)`. Dosya/log/kilit yok.
+  - İptal → `aborted`, checkpoint yazılır, çıkış kodu **130**; handler indirme sonunda kaldırılır.
+- [ ] `summary.http.error == aborted` → 130; diğer hatalar 1; kullanım hatası 2 (mevcut).
+
+**Süreç testleri (`tests/integration/process_resume_test.cpp`, ayrı CTest girdisi)**
+
+- [ ] CLI yolu `FLOWGET_CLI_PATH` derleme tanımı / CTest env ile verilir; test hedefi `flowget-cli`'ye
+      bağımlıdır.
+- [ ] **Öldürme testi (Windows `TerminateProcess`, POSIX `SIGKILL`):** yerel throttle'lı sunucu;
+      çocuk süreç başlatılır; **sabit sleep yok** — sidecar her 50 ms yoklanır, `bytes_done()` belirli
+      eşiğe (ör. toplamın %20'si) ulaşınca öldürülür (zaman aşımı 60 s). Sonra aynı komut yeniden
+      çalıştırılır; `exit=0`, kaynak/hedef SHA-256 eşit, sidecar silinmiş.
+- [ ] **Windows Ctrl+C:** çocuk `CREATE_NEW_PROCESS_GROUP` ile başlatılır; sidecar eşiğe ulaşınca
+      `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid)` gönderilir; çıkış 130 beklenir; ardından
+      resume ile SHA-256 eşit. **Gerekçe:** `CTRL_C_EVENT` belirli bir süreç grubuna gönderilemez
+      (grup 0 tüm konsolu etkiler); `CTRL_BREAK_EVENT` gönderilebilir ve CLI iki olayı aynı handler'da
+      işler. Test süreci konsolsuzsa (`GetConsoleWindow()==nullptr`) `AllocConsole()` denenir;
+      `GenerateConsoleCtrlEvent` yine başarısız olursa test `GTEST_SKIP()` ile gerekçeli atlanır —
+      alternatif kapsam: handler birim testi + `TerminateProcess` öldürme testi (OS teslimi hariç).
+- [ ] **POSIX Ctrl+C (opsiyonel ama ucuz):** `SIGINT` gönder → 130 → resume → SHA-256 eşit.
+- [ ] **`--no-resume` CLI:** geçerli sidecar + kısmi dosya varken `--no-resume` → sidecar silinmiş,
+      taze indirme, hash doğru.
+- [ ] **`Resuming from ...` çıktısı:** kısmi indirme sonrası ikinci çalıştırmanın `stderr`'inde satır
+      var; MiB değeri `resumed_from_bytes` ile tutarlı.
+- [ ] Kanıt: Windows `ctest` (process testleri dahil), `check_linux.ps1` (POSIX SIGINT/SIGKILL),
+      pre-commit, CLI e2e çıktısı, clang-tidy baseline.
+
+**Riskler (S5a-2)**
+
+- 2 s checkpoint + fsync 100 MB/3,66 s hedefinde maliyetli olabilir; ölçüm %5'i aşarsa önce gereksiz
+  flush'lar kaldırılır, sonra interval kararı kullanıcıya sorulur (şart 2 s olduğu için sessizce
+  değiştirilmez).
+- Windows'ta `FlushFileBuffers` + antivirüs sidecar rename'ini geciktirebilir; checkpoint hatası
+  ölümcül değil, sonraki tetikte yeniden denenir.
+- `Last-Modified` 1 s çözünürlüklü; aynı saniye içinde değişen dosyada eski 206 gelebilir. Güçlü ETag
+  tercih edilir; bu bilinen sınır S5b/S8 hash doğrulamasıyla kapatılır.
+- Süreç testleri CI'da konsol/zamanlama nedeniyle kırılgan olabilir; durum tabanlı tetik + zaman aşımı
+  + gerekçeli skip.
+- İkinci Ctrl+C checkpoint yazmadan süreci sonlandırır (bilinçli; varsayılan davranış).
+
+**DoD (S5a-2)**
+
+- S5a-2a: yukarıdaki API/cancel testleri yeşil; flush invariantı kanıtlı; 100 MB performans ≤ ~%5;
+  `check_linux.ps1` üç preset `exit 0`; clang-tidy baseline 6.
+- S5a-2b: `--no-resume`, resume satırı, Ctrl+C 130, gerçek öldürme + Windows Ctrl+C sonrası SHA-256
+  eşitliği; process testleri yeşil; `check_linux.ps1` yeşil.
+- Her iki dilim ayrı commit; push kullanıcıda.
 
 #### S5b — tek akış devamı + ölçümler
 
@@ -623,8 +789,9 @@ bozuk dosya üretmez, baştan indirir. M1'de JSON sidecar; M2'de SQLite'a taşı
       200 → truncate + baştan.
 - [ ] Ölçüm 1 (kayıp): throttle'lı yerel sunucu, 20 MB/s, %40'ta öldür → yeniden çalıştır; yeniden
       indirilen veri **≈ checkpoint aralığı** (~2 s'lik veri), SHA-256 eşit. Tabloya işlenir.
-- [ ] Ölçüm 2 (performans): 100 MB, 8 bağlantı, checkpoint **açık** → S7 baseline'ı 3,66 s'nin en fazla
-      **~%5** üstü (≤ ~3,84 s). Aynı makine/sunucu, birkaç tekrar; sonuç tabloya.
+- [ ] Ölçüm 2 (performans): S5a-2a'da ölçülen 100 MB / 8 bağlantı / checkpoint açık sonucunu S5b
+      sonunda **tekrar doğrula** → S7 baseline'ı 3,66 s'nin en fazla **~%5** üstü (≤ ~3,84 s).
+      Aynı makine/sunucu, birkaç tekrar; sonuç tabloya.
 - [ ] Doküman: resume varsayılan açık, `--no-resume` kaçış yolu; sidecar M2'de SQLite'a taşınır.
 
 **Riskler**
