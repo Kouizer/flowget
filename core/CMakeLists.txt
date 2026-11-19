@@ -16,6 +16,7 @@ add_library(
     src/segmented_download.cpp
     src/downloader.cpp
     src/resume_state.cpp
+    src/resume_checkpoint.cpp
     src/file_replace.cpp
     src/storage.cpp)
 

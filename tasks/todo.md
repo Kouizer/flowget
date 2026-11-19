@@ -620,8 +620,11 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
    açmadan tamam sayılır. İstek `start+done .. end-1`, uzunluk `length-done`.
 5. `If-Range`: güçlü ETag varsa ETag; yoksa `Last-Modified`; ikisi de yoksa başlık yok (ve resume
    yapılmaz). Zayıf `W/` ETag `If-Range`'de kullanılmaz.
-6. Sidecar'ın `url` alanı **probe'un effective URL'i** olarak yazılır; resume'da yeni probe'un
-   effective URL'i ile karşılaştırılır (redirect hedefi değişirse sıfırdan).
+6. Sidecar'ın `url` alanı **kullanıcının verdiği özgün URL** olarak yazılır, probe'un effective URL'i
+   değil. Resume'da özgün URL + `total_bytes` + güçlü ETag/Last-Modified karşılaştırılır; **effective
+   URL karşılaştırılmaz.** Gerekçe: CDN yönlendirmeleri imzalı ve her çalıştırmada farklı olabilir;
+   effective URL'i karşılaştırmak gerçek sitelerde resume'u hiç çalıştırmaz. Segment istekleri yeni
+   probe'un **güncel effective URL'ine** gider (yönlendirme hedefi değişse bile aynı temsil).
 7. Checkpoint sırası değişmez: `storage->flush()` → başarılıysa `.flowget.tmp` yaz + flush →
    atomik rename. **Veri flush'ı başarısızsa sidecar yayınlanmaz**; indirme `io` hatasıyla biter,
    önceki sidecar olduğu gibi kalır.
@@ -652,15 +655,17 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
 - [ ] `core/include/flowget/download.h` — `resume`, `on_resume`, summary alanları.
 - [ ] `core/src/segmented_download.{h,cpp}` — `SegmentTask`, `ResumeContext`, kalan aralık, `If-Range`,
       checkpoint, resume-invalidated sonucu, `StorageFactory`/interval seam'i.
-- [ ] `core/src/resume_checkpoint.{h,cpp}` — `publish_resume_checkpoint(IStorage&, sidecar_path,
+- [x] `core/src/resume_checkpoint.{h,cpp}` — `publish_resume_checkpoint(IStorage&, sidecar_path,
       const ResumeState&, std::string& error)`: veri flush → sidecar atomik yaz; flush hatasında
       sidecar'a dokunmaz.
-- [ ] `core/src/file_replace.{h,cpp}` (veya `file_io.{h,cpp}`) — `read_file_utf8` (boyut sınırı +
+- [x] `core/src/file_replace.{h,cpp}` (veya `file_io.{h,cpp}`) — `read_file_utf8` (boyut sınırı +
       UTF-8 yol); `resume_sidecar_path` / `remove_stale_sidecar_temp` kullanımı.
 - [ ] `core/src/downloader.cpp` — sidecar oku → doğrula → probe karşılaştır → devam/baştan; tamam
       kontrolü; `.tmp` temizliği; fallback/hata/başarı yollarında sidecar kararı.
 - [ ] `tests/unit/resume_state_test.cpp` — truncation/mutation fuzz (aşağıda).
-- [ ] `tests/unit/resume_checkpoint_test.cpp` — flush hatası invariantı.
+- [x] `tests/unit/resume_checkpoint_test.cpp` — flush hatası invariantı: veri flush'ı başarısızsa
+      sidecar baytları değişmez, `.tmp` kalmaz; boş sidecar yolunda veri hiç flush edilmez. Motor
+      seviyesinde enjekte edilen hata commit (b)'de.
 - [ ] `tests/integration/downloader_test.cpp` (veya yeni `resume_download_test.cpp`) — API + cancel
       jetonu senaryoları.
 - [ ] `tests/CMakeLists.txt`, `core/CMakeLists.txt`.
@@ -673,8 +678,9 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
 4. Boyut > 1 MiB / okunamıyor / parse hatası → sidecar sil, taze, `resume_note`.
 5. Tüm segmentler `done == length` ise: çıktı boyutu `total_bytes` ise **tamam** (ağ isteği yok,
    sidecar sil, `resumed=true`, `resumed_from_bytes=total`, note `"already complete"`); değilse sil, taze.
-6. Probe. Sidecar `url` (effective) / `total_bytes` / güçlü ETag veya Last-Modified uyuşmuyorsa →
-   sil, taze, note (neden).
+6. Probe. Sidecar `url` **kullanıcının özgün URL'i** ile, `total_bytes` probe boyutuyla, güçlü ETag
+   (yoksa Last-Modified) probe değeriyle karşılaştırılır. Effective URL karşılaştırılmaz (CDN
+   yönlendirmeleri değişebilir). Uyuşmazsa → sil, taze, note (neden).
 7. Çıktı dosyası yok veya boyutu `total_bytes` değil → sil, taze.
 8. `bytes_done == 0` → resume'un kazancı yok: sil, taze.
 9. Aksi halde `SegmentTask`'ları kur, motoru `read_write` (asla truncate) + `preallocate(total)` ile
@@ -695,6 +701,10 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
       sonrası sidecar'daki `done`, başarıyla yazılan baytları aşmaz.
 - [ ] **ETag değişimi:** ikinci çalıştırmada sunucu yeni ETag/gövde → `resumed=false`, sıfırdan,
       yeni içerik doğru, note nedeni taşır.
+- [ ] **Yönlendirme hedefi değişir, ETag aynı (özgün URL kuralı):** ilk çalıştırma A → B/v1; kısmi
+      indirme sonrası ikinci çalıştırmada A → B/v2 yönlendirir, ETag aynı → `resumed=true`, içerik
+      SHA-256 birebir; segment istekleri **B/v2**'ye gider, `If-Range` taşır. Sidecar `url` alanı
+      A (özgün kullanıcı URL'i) kalır; effective URL karşılaştırılsaydı test kırmızı olurdu.
 - [ ] **Zayıf ETag → Last-Modified:** `ETag: W/"..."` + `Last-Modified`; resume çalışır, `If-Range`
       Last-Modified taşır.
 - [ ] **Validator yok:** resume yok; sidecar silinir, sıfırdan.
@@ -754,6 +764,8 @@ Windows Ctrl+C sonrası devam.
       işler. Test süreci konsolsuzsa (`GetConsoleWindow()==nullptr`) `AllocConsole()` denenir;
       `GenerateConsoleCtrlEvent` yine başarısız olursa test `GTEST_SKIP()` ile gerekçeli atlanır —
       alternatif kapsam: handler birim testi + `TerminateProcess` öldürme testi (OS teslimi hariç).
+      **Atlama görünür olmalı:** `GTEST_SKIP() << "reason"` (logda `SKIPPED` satırı) ve rapor/kanıt
+      tablosunda "Windows Ctrl+C otomatik kanıtsız, elle doğrulanacak" notu; sessiz skip yasak.
 - [ ] **POSIX Ctrl+C (opsiyonel ama ucuz):** `SIGINT` gönder → 130 → resume → SHA-256 eşit.
 - [ ] **`--no-resume` CLI:** geçerli sidecar + kısmi dosya varken `--no-resume` → sidecar silinmiş,
       taze indirme, hash doğru.

@@ -410,3 +410,26 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
   (`cognitive complexity 30`) `parse_header` + `parse_segments` olarak bölündü.
 - Tekrarını önleyen kontrol: baseline 6'nın üstü `check_linux.ps1` çıktısında "EXCEEDED" olarak
   görünür; yeni kod eklerken tidy advisory olsa da sayı okunur.
+
+### 2026-11-19 — Sidecar okuyucu `ifstream` motorun kendi rename'ini kilitler (Windows)
+- Belirti (önceden önlenen sınıf): Sidecar'ı checkpoint sırasında okuyan bir yoklayıcı veya test
+  yardımcısı `std::ifstream`/paylaşımsız `CreateFileW` ile açtığında, motorun atomik
+  `MoveFileExW(REPLACE_EXISTING)` çağrısı `ERROR_SHARING_VIOLATION` (32) alır. Checkpoint "sidecar
+  yazılamadı" diye sessizce atlanır; indirme sürer ama resume verisi ilerlemez.
+- Kök neden: Windows'ta paylaşım modu açan tarafın niyetidir. `FILE_SHARE_DELETE` verilmezse açık
+  handle, hedef dosyanın rename ile değiştirilmesini engeller. `IStorage::open(read_only)` bunu
+  doğru yapıyor: `CreateFileW(..., FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, ...)`
+  (S3'ten beri). Sorun storage'da değil, **yanlış API seçiminde**: kısa bir JSON okumak için
+  `ifstream` kullanmak doğal görünüyor ama paylaşım bayraklarını devre dışı bırakıyor.
+- Düzeltme: Sidecar okumaları `detail::read_file_utf8` üzerinden `IStorage` (read_only) kullanıyor;
+  boyut sınırı ayrıştırmadan önce uygulanıyor. Böylece UTF-8→UTF-16 dönüşümü de tek yerde kalıyor.
+  Testteki yoklayıcılar da aynı yolu kullanır. **Ek bulgu:** paylaşım bayrakları tek başına yeterli
+  değil — Windows'ta `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` hedef dosya açıkken, okuyucu
+  `FILE_SHARE_DELETE` verse bile `ERROR_ACCESS_DENIED` (5) veriyor (yerel ölçüm: MoveFileEx 5,
+  `ReplaceFileW` 0). Bu yüzden `replace_file` Windows'ta hedef varsa `ReplaceFileW(...,
+  REPLACEFILE_WRITE_THROUGH)`, hedef yoksa `MoveFileExW(MOVEFILE_WRITE_THROUGH)` kullanıyor.
+- Tekrarını önleyen kontrol: `ResumeStoreTest.ReplacesTheSidecarWhileAReaderHasItOpen` bir okuma
+  handle'ı açıkken atomik yazma yapıyor; paylaşım bayrağı düşerse **veya** `ReplaceFileW` yerine
+  `MoveFileExW`'ye dönülürse test Windows'ta kırmızıya döner. Kural: çalışma anında başka bir
+  yazarın rename edebileceği dosyalar `ifstream` ile açılmaz; Windows'ta açık hedefi değiştirmek
+  için `ReplaceFileW` kullanılır.

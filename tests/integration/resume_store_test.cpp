@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -16,6 +17,7 @@ using flowget::IStorage;
 using flowget::OpenMode;
 using flowget::resume_sidecar_path;
 using flowget::resume_sidecar_temp_path;
+using flowget::detail::read_file_utf8;
 
 // UTF-8 -> native path without the ANSI code page (tasks/lessons.md, 2026-11-14). The sidecar
 // helper itself takes UTF-8; the test needs this only to create directories and to read files back.
@@ -164,6 +166,77 @@ TEST_F(ResumeStoreTest, WritesThroughANonAsciiPath) {
 
     // The sidecar sits next to the output, as the engine expects.
     EXPECT_EQ(sidecar, output + ".flowget");
+}
+
+TEST_F(ResumeStoreTest, ReadsAWholeSidecarThroughIStorage) {
+    const std::string sidecar = path("out.bin.flowget");
+    const std::string contents = "{\"schema_version\": 1, \"url\": \"https://example.com/b\"}\n";
+    {
+        std::ofstream file{utf8_path(sidecar), std::ios::binary | std::ios::trunc};
+        file << contents;
+    }
+
+    std::string read;
+    std::string error;
+    ASSERT_TRUE(read_file_utf8(sidecar, flowget::kMaxResumeStateBytes, read, error)) << error;
+    EXPECT_EQ(read, contents);
+}
+
+TEST_F(ResumeStoreTest, ReadFileRejectsAnOversizedFileWithoutAllocatingIt) {
+    const std::string sidecar = path("huge.bin.flowget");
+    {
+        std::ofstream file{utf8_path(sidecar), std::ios::binary | std::ios::trunc};
+        file << std::string(256, 'x');
+    }
+
+    std::string read;
+    std::string error;
+    EXPECT_FALSE(read_file_utf8(sidecar, 16, read, error));
+    EXPECT_FALSE(error.empty());
+    EXPECT_TRUE(read.empty());
+}
+
+TEST_F(ResumeStoreTest, ReadFileReportsAMissingFile) {
+    std::string read;
+    std::string error;
+    EXPECT_FALSE(read_file_utf8(path("does-not-exist.flowget"), 1024, read, error));
+    EXPECT_FALSE(error.empty());
+}
+
+TEST_F(ResumeStoreTest, ReplacesTheSidecarWhileAReaderHasItOpen) {
+    const std::string sidecar = path("out.bin.flowget");
+    std::string error;
+    ASSERT_TRUE(flowget::detail::write_file_atomically(sidecar, "previous", error)) << error;
+
+    // Holding a read handle open must not block the checkpoint's rename. On Windows this only
+    // works because IStorage::open(read_only) passes FILE_SHARE_READ|FILE_SHARE_WRITE|
+    // FILE_SHARE_DELETE; an ifstream (or a CreateFileW without FILE_SHARE_DELETE) would make the
+    // engine's own atomic rename fail with ERROR_SHARING_VIOLATION (tasks/lessons.md).
+    const std::unique_ptr<IStorage> reader = flowget::make_platform_storage();
+    const flowget::StorageResult opened = reader->open(sidecar, OpenMode::read_only);
+    ASSERT_TRUE(opened.ok()) << opened.message;
+
+    ASSERT_TRUE(flowget::detail::write_file_atomically(sidecar, "next", error)) << error;
+    std::string contents;
+    ASSERT_TRUE(read_file_utf8(sidecar, flowget::kMaxResumeStateBytes, contents, error)) << error;
+    EXPECT_EQ(contents, "next");
+    EXPECT_FALSE(exists(sidecar + ".tmp"));
+}
+
+TEST_F(ResumeStoreTest, ReadsThroughANonAsciiPath) {
+    const std::string directory = path("İndirilenler");
+    std::error_code created;
+    std::filesystem::create_directories(utf8_path(directory), created);
+    ASSERT_FALSE(created) << created.message();
+
+    const std::string sidecar = path(resume_sidecar_path("İndirilenler/İndirilen_çğış.bin"));
+    const std::string contents = "{\"schema_version\": 1}\n";
+    std::string error;
+    ASSERT_TRUE(flowget::detail::write_file_atomically(sidecar, contents, error)) << error;
+
+    std::string read;
+    ASSERT_TRUE(read_file_utf8(sidecar, flowget::kMaxResumeStateBytes, read, error)) << error;
+    EXPECT_EQ(read, contents);
 }
 
 } // namespace

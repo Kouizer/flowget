@@ -28,8 +28,12 @@ add_executable(flowget_unit_tests
                unit/segment_planner_test.cpp
                unit/sha256_test.cpp
                unit/resume_state_test.cpp
+               unit/resume_checkpoint_test.cpp
 )
 target_link_libraries(flowget_unit_tests PRIVATE FlowGet::core GTest::gtest_main)
+# core/src is on the include path for the internal test seams that are not public API:
+# resume_checkpoint.h (flush-before-publish invariant). Same idea as the integration target.
+target_include_directories(flowget_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/core/src)
 
 flowget_set_warnings(flowget_unit_tests)
 

@@ -7,6 +7,7 @@
 #include "utf8_path.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -82,9 +83,24 @@ bool replace_file(const std::string& temp_path, const std::string& final_path, s
         error = "cannot replace a file: the path is not valid UTF-8";
         return false;
     }
-    if (::MoveFileExW(wide_temp.c_str(),
-                      wide_final.c_str(),
-                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
+    // MoveFileExW(REPLACE_EXISTING) refuses to replace a destination that is open, even when the
+    // reader passed FILE_SHARE_DELETE (observed as ERROR_ACCESS_DENIED). A sidecar reader - a UI
+    // poller, a test helper - would therefore break the engine's own checkpoint. ReplaceFileW is
+    // the Windows API for this case: it replaces an existing file while respecting delete sharing
+    // and keeps the replacement atomic. When the destination does not exist yet (first checkpoint)
+    // there is nothing to replace, so a plain move is enough.
+    const DWORD destination_attributes = ::GetFileAttributesW(wide_final.c_str());
+    if (destination_attributes != INVALID_FILE_ATTRIBUTES) {
+        if (::ReplaceFileW(wide_final.c_str(),
+                           wide_temp.c_str(),
+                           nullptr,
+                           REPLACEFILE_WRITE_THROUGH,
+                           nullptr,
+                           nullptr) == 0) {
+            error = "cannot replace \"" + final_path + "\": " + win32_error_text(::GetLastError());
+            return false;
+        }
+    } else if (::MoveFileExW(wide_temp.c_str(), wide_final.c_str(), MOVEFILE_WRITE_THROUGH) == 0) {
         error = "cannot replace \"" + final_path + "\": " + win32_error_text(::GetLastError());
         return false;
     }
@@ -123,6 +139,49 @@ bool write_file_atomically(const std::string& final_path,
 
 bool remove_stale_sidecar_temp(const std::string& output_path, std::string& error) {
     return remove_file(resume_sidecar_temp_path(output_path), error);
+}
+
+bool read_file_utf8(const std::string& utf8_path,
+                    std::size_t limit,
+                    std::string& contents,
+                    std::string& error) {
+    contents.clear();
+    const std::unique_ptr<IStorage> storage = make_platform_storage();
+    const StorageResult opened = storage->open(utf8_path, OpenMode::read_only);
+    if (!opened.ok()) {
+        error = "cannot open \"" + utf8_path + "\": " +
+                (opened.message.empty() ? storage_error_name(opened.error) : opened.message);
+        return false;
+    }
+
+    FileOffset size = 0;
+    const StorageResult sized = storage->size(size);
+    if (!sized.ok()) {
+        error = "cannot query the size of \"" + utf8_path +
+                "\": " + (sized.message.empty() ? storage_error_name(sized.error) : sized.message);
+        return false;
+    }
+    if (size < 0 || static_cast<std::uint64_t>(size) > static_cast<std::uint64_t>(limit)) {
+        error = "\"" + utf8_path + "\" is larger than the " + std::to_string(limit) + "-byte limit";
+        return false;
+    }
+
+    contents.assign(static_cast<std::size_t>(size), '\0');
+    if (contents.empty()) {
+        return true;
+    }
+
+    std::size_t read = 0;
+    const std::span<char> text{contents.data(), contents.size()};
+    const std::span<std::byte> bytes = std::as_writable_bytes(text);
+    const StorageResult result = storage->read_at(0, bytes.data(), bytes.size(), read);
+    if (!result.ok() || read != bytes.size()) {
+        error = "cannot read \"" + utf8_path + "\": " +
+                (result.message.empty() ? storage_error_name(result.error) : result.message);
+        contents.clear();
+        return false;
+    }
+    return true;
 }
 
 } // namespace flowget::detail
