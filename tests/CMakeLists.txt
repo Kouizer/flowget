@@ -27,6 +27,7 @@ add_executable(flowget_unit_tests
                unit/storage_test.cpp
                unit/segment_planner_test.cpp
                unit/sha256_test.cpp
+               unit/resume_state_test.cpp
 )
 target_link_libraries(flowget_unit_tests PRIVATE FlowGet::core GTest::gtest_main)
 
@@ -39,8 +40,12 @@ add_executable(flowget_integration_tests
                integration/downloader_test.cpp
                integration/probe_test.cpp
                integration/storage_io_test.cpp
+               integration/resume_store_test.cpp
                support/http_test_server.cpp)
-target_include_directories(flowget_integration_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# core/src is on the include path for the internal test seams that are not public API: file_replace.h
+# (atomic sidecar writes). Same idea as storage_detail.h, which is public only for tests.
+target_include_directories(flowget_integration_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+                                                             ${PROJECT_SOURCE_DIR}/core/src)
 target_link_libraries(flowget_integration_tests PRIVATE FlowGet::core GTest::gtest_main
                                                       Threads::Threads)
 if(WIN32)

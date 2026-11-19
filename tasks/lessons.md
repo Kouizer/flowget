@@ -385,3 +385,28 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
 - Tekrarını önleyen kontrol: yeni naming seçeneği eklerken tek dosyalık bir örnekle
   `clang-tidy --config-file=...` çalıştırıp desenin gerçekten bastırdığını gör; "ayar var" demekle
   yetinme, toplam sayının düştüğünü ölç.
+
+### 2026-11-19 — Kullanılmayan `constexpr` sabit yalnız Linux/Clang'de build'i kırdı
+- Belirti: `scripts/check_linux.ps1` `resume_state.cpp` içinde
+  `unused variable 'kStateFieldCount' [-Werror,-Wunused-const-variable]` ve aynı sınıftan ikinci bir
+  hata verdi; aynı dosya MSVC `/W4 /WX` ile uyarısız derlenmişti ve yerel `ctest` yeşildi.
+- Kök neden: `-Wunused-const-variable` Clang'in `-Wall` setinde var; MSVC'nin `/W4` setinde ad alanı
+  kapsamlı `constexpr` için karşılığı yok (C4189 yalnız yerel değişkenleri kapsar). Sabitler
+  `has_exact_fields(...)` çağrıları `.size()` kullandığı için gerçekten ölüydü — uyarı doğruydu,
+  susturulacak bir gürültü değildi.
+- Düzeltme: kullanılmayan iki sabit silindi (sayı `initializer_list::size()`'dan geliyor). MSVC tarafı
+  hiç değişmedi.
+- Tekrarını önleyen kontrol: ad alanı kapsamlı sabit yalnız gerçekten okunuyorsa tanımlanır; `ctest`
+  yeşili tek başına yeterli kanıt değil, commit öncesi `check_linux.ps1` (Clang `-Werror`) zorunlu.
+  Bu sınıf MSVC'de görünmez.
+
+### 2026-11-19 — clang-tidy: `get_ref` tipini tekrar eden değişken (`modernize-use-auto`)
+- Belirti: clang-tidy 6 → 9 bulgu; biri `resume_state.cpp` içinde "use auto when initializing with a
+  template cast to avoid duplicating the type name".
+- Kök neden: `nlohmann::json::get_ref<const std::string&>()` dönüş tipi zaten `const std::string&`;
+  açık tip tekrarı, şablon argümanı değişince ayrışabilecek bir kopya bilgi taşıyor.
+- Düzeltme: `const auto& text = value.get_ref<const std::string&>();`. Aynı turda iki bulgu daha
+  düzeltildi: `has_exact_fields` döngüsü `std::ranges::all_of` oldu ve `parse_resume_state`
+  (`cognitive complexity 30`) `parse_header` + `parse_segments` olarak bölündü.
+- Tekrarını önleyen kontrol: baseline 6'nın üstü `check_linux.ps1` çıktısında "EXCEEDED" olarak
+  görünür; yeni kod eklerken tidy advisory olsa da sayı okunur.

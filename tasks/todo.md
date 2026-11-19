@@ -65,7 +65,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | **TAMAMLANDI** |
 | S4b | S4b-lite: clang-tidy dosya listesi + gerçek bulgular + baseline (`--warnings-as-errors` S8'e ertelendi) | **TAMAMLANDI** |
-| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | **ONAYLANDI** — S5a-1 yürütülüyor |
+| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | **S5a-1 TAMAMLANDI** — S5a-2 sırada |
 | S6 | `RetryPolicy` + `RateLimiter` | |
 | S7 | `DynamicSplitter` + benchmark tablosu | |
 | S8 | `HashVerifier` + hata modeli + CLI bayrakları + RSS ölçümü | |
@@ -571,20 +571,33 @@ bozuk dosya üretmez, baştan indirir. M1'de JSON sidecar; M2'de SQLite'a taşı
 | Tüm segmentlerde `done == end-start` | Tamam kabul et (ağ isteği yok), sidecar'ı sil |
 | Elle "done büyütülmüş" sidecar | **Bilinçli sınır:** yapısal doğrulama geçer, içerik doğrulanmaz; yalnız `--sha256` (S8) yakalar. Sidecar kullanıcı verisidir, imzalanmaz |
 
-#### S5a-1 — model, atomik yazma, doğrulama (ağ yok)
+#### S5a-1 — model, atomik yazma, doğrulama (ağ yok) — **TAMAMLANDI (2026-11-19)**
 
-- [ ] `vcpkg.json` + `core/CMakeLists.txt`: `nlohmann-json` (`nlohmann_json::nlohmann_json`, PRIVATE).
-- [ ] `core/include/flowget/resume_state.h` + `core/src/resume_state.cpp`: `ResumeState`, `ResumeSegment`,
-      `serialize_resume_state` (deterministik), `parse_resume_state` (`allow_exceptions=false`), katı
-      doğrulama, `is_strong_etag`.
-- [ ] `core/src/file_replace.h/.cpp`: `replace_file` (atomik), `write_file_atomically` (tmp → IStorage
-      yaz + flush → rename; hata halinde tmp sil), `sidecar_path` / `sidecar_temp_path`,
-      `remove_stale_sidecar_temp`.
-- [ ] `tests/unit/resume_state_test.cpp` (round-trip + her reddetme sınıfı) ve
-      `tests/integration/resume_store_test.cpp` (gerçek dosya, ağ yok: atomik yazma, üzerine yazma, tmp
-      temizliği, ASCII olmayan yol).
-- [ ] Kanıt: Windows build + `ctest`, `check_linux.ps1` (3 preset), pre-commit, `check_dependencies.py`,
-      clean build süresi öncesi/sonrası.
+- [x] `vcpkg.json` + `core/CMakeLists.txt`: `nlohmann-json` 3.12.0 (`nlohmann_json::nlohmann_json`,
+      PRIVATE, header-only).
+- [x] `core/include/flowget/resume_state.h` + `core/src/resume_state.cpp`: `ResumeState`, `ResumeSegment`
+      (`start`/`end`/`done`), `serialize_resume_state` (`ordered_json`, deterministik), `parse_resume_state`
+      (`allow_exceptions=false`, 1 MiB ve 4096 segment sınırı), katı doğrulama, `is_strong_etag`
+      (`W/` reddi), `has_resume_validator`.
+- [x] `core/src/file_replace.h/.cpp`: `replace_file` (POSIX `rename` /
+      `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`), `write_file_atomically` (tmp → IStorage yaz +
+      `flush` → rename; hata halinde tmp sil), `remove_stale_sidecar_temp`; sidecar yolları
+      `resume_sidecar_path` / `resume_sidecar_temp_path`.
+- [x] UTF-8 → UTF-16 dönüşümü ve Win32 hata metni `core/src/utf8_path.h/.cpp`'ye taşındı; storage ve
+      sidecar yazıcısı aynı tek dönüşümü kullanıyor (kopya yok).
+- [x] `tests/unit/resume_state_test.cpp` (15 test: round-trip, determinizm, 30+ reddetme varyantı,
+      zayıf ETag, yol yardımcıları) ve `tests/integration/resume_store_test.cpp` (7 test: atomik yazma,
+      üzerine yazma, rename hatasında eski sidecar'ın korunması, tmp temizliği, ASCII olmayan yol).
+- [x] **Kanıt (yerel, 2026-11-19):** MSVC 19.52 `/W4 /WX` build temiz; `ctest` 2/2 — **74 birim**
+      (59+15) + **51 entegrasyon** (44+7). `check_dependencies.py` exit 0 (5 bağımlılık, GPL/AGPL yok).
+      `scripts/check_linux.ps1`: `linux-x64` (debug), `linux-x64-asan` (ASan+UBSan) ve `linux-x64-tsan`
+      (TSan) üçünde `ctest` 2/2, **PASSED** (3,3 dk); clang-tidy **6 bulgu = baseline** (yeni kod bulgu
+      eklemedi).
+- [x] **Build süresi etkisi:** temiz build 12,2 s (öncesi) → 14,8 / 15,3 / 19,5 s (sonrası, 3 ölçüm;
+      disk/AV gürültüsü). Fark +5 çeviri birimi; JSON başlığının payı: `resume_state.cpp` 5,8–6,2 s,
+      aynı büyüklükteki `file_replace.cpp` 4,6–4,7 s → **~1,2 s tek TU'da**. `nlohmann-json` header-only:
+      ilk `vcpkg install` 8,3 s, sonrası binary cache (0,7 ms); link/runtime maliyeti yok.
+- [x] `py -m pre_commit run --all-files` temiz; commit `S5a-1`.
 
 #### S5a-2 — motor + CLI entegrasyonu
 
