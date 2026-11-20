@@ -1,5 +1,6 @@
 #include <flowget/downloader.h>
 #include <flowget/probe.h>
+#include <flowget/resume_state.h>
 #include <flowget/segment_planner.h>
 #include <flowget/single_stream_download.h>
 #include <flowget/storage.h>
@@ -118,8 +119,15 @@ DownloadSummary Downloader::download(const DownloadOptions& options,
     }
 
     const std::vector<Segment> segments = plan_segments(probe_result.content_length, connections);
+    // Resume wiring lands with the Downloader decision tree; a fresh attempt marks every range as
+    // untouched and therefore keeps the truncate semantics of S5a-1.
+    std::vector<detail::SegmentTask> tasks;
+    tasks.reserve(segments.size());
+    for (const Segment& segment : segments) {
+        tasks.push_back(detail::SegmentTask{segment, 0});
+    }
     detail::SegmentedOutcome outcome =
-        detail::run_segmented(options, probe_result, segments, on_progress, cancel);
+        detail::run_segmented(options, probe_result, tasks, on_progress, cancel);
 
     if (!outcome.fallback_reason.empty()) {
         std::string removal_error;
@@ -128,6 +136,8 @@ DownloadSummary Downloader::download(const DownloadOptions& options,
                            "cannot remove the partial file before falling back: " + removal_error,
                            connections);
         }
+        std::string ignored;
+        static_cast<void>(detail::remove_file(resume_sidecar_path(options.output_path), ignored));
         return fallback(outcome.fallback_reason);
     }
 
@@ -136,6 +146,8 @@ DownloadSummary Downloader::download(const DownloadOptions& options,
         if (!detail::remove_file(options.output_path, removal_error)) {
             outcome.summary.message += "; cannot remove the partial file: " + removal_error;
         }
+        std::string ignored;
+        static_cast<void>(detail::remove_file(resume_sidecar_path(options.output_path), ignored));
     }
     return outcome.summary;
 }

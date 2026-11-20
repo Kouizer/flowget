@@ -65,7 +65,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | **TAMAMLANDI** |
 | S4b | S4b-lite: clang-tidy dosya listesi + gerçek bulgular + baseline (`--warnings-as-errors` S8'e ertelendi) | **TAMAMLANDI** |
-| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | **S5a-1 TAMAMLANDI** — S5a-2a/2b planlandı, onay bekliyor |
+| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | **S5a-2a UYGULANIYOR** — motor commit'i hazır; Downloader + ölçüm açık |
 | S6 | `RetryPolicy` + `RateLimiter` | |
 | S7 | `DynamicSplitter` + benchmark tablosu | |
 | S8 | `HashVerifier` + hata modeli + CLI bayrakları + RSS ölçümü | |
@@ -653,8 +653,12 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
 **Dosyalar**
 
 - [ ] `core/include/flowget/download.h` — `resume`, `on_resume`, summary alanları.
-- [ ] `core/src/segmented_download.{h,cpp}` — `SegmentTask`, `ResumeContext`, kalan aralık, `If-Range`,
-      checkpoint, resume-invalidated sonucu, `StorageFactory`/interval seam'i.
+- [x] `core/src/segmented_download.{h,cpp}` — `SegmentTask`, kalan aralık, `If-Range` (güçlü ETag
+      yoksa Last-Modified), checkpoint, `resume_invalidated` sonucu, `StorageFactory`/interval
+      seam'i; segment istekleri probe'un güncel effective URL'ine gider.
+- [x] `tests/integration/segmented_engine_test.cpp` — motor: kalan aralıktan devam, bitmiş aralığa
+      istek yok, `If-Range` seçimi (güçlü/zayıf/yok), iptalde checkpoint, flush hatasında `io` +
+      eski sidecar korunur.
 - [x] `core/src/resume_checkpoint.{h,cpp}` — `publish_resume_checkpoint(IStorage&, sidecar_path,
       const ResumeState&, std::string& error)`: veri flush → sidecar atomik yaz; flush hatasında
       sidecar'a dokunmaz.
@@ -694,9 +698,9 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
       `If-Range` doğru validator.
 - [ ] **Periyodik checkpoint:** >2 s süren throttle'lı indirme; iptalden önce sidecar en az bir kez
       güncellenmiş (`done > 0`) ve içerik geçerli.
-- [ ] **Flush hatası sidecar'ı ilerletmez:** `publish_resume_checkpoint` sahte storage'ın `flush`'ı
-      hata döndürünce `false`; sidecar baytları **değişmez**, `.tmp` kalmaz. Ayrıca motor seviyesinde
-      `StorageFactory` ile enjekte edilen hata → `io` hatası, sidecar ilerlemez.
+- [x] **Flush hatası sidecar'ı ilerletmez:** `publish_resume_checkpoint` sahte storage'ın `flush`'ı
+      hata döndürünce `false`; sidecar baytları **değişmez**, `.tmp` kalmaz (birim). Motor seviyesinde
+      `StorageFactory` ile enjekte edilen hata → `io` hatası, sidecar ilerlemez (entegrasyon).
 - [ ] **`done` yalnız başarılı yazmadan sonra:** sahte storage N. yazmada hata; iptal/checkpoint
       sonrası sidecar'daki `done`, başarıyla yazılan baytları aşmaz.
 - [ ] **ETag değişimi:** ikinci çalıştırmada sunucu yeni ETag/gövde → `resumed=false`, sıfırdan,
@@ -730,6 +734,12 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
       makine/sunucu farklıysa aynı oturumda baseline yeniden ölçülür ve fark raporlanır.
 - [ ] Kanıt: MSVC build + `ctest`, `check_linux.ps1` (debug/ASan/TSan), `pre_commit`, clang-tidy
       baseline 6 (yeni bulgu yok), performans ölçümü.
+
+> **Dilim commit'i (b) kanıtı (2026-11-20):** MSVC 19.52 `/W4 /WX` build temiz; `ctest` 2/2 —
+> **77 birim + 61 entegrasyon** (5 yeni `SegmentedEngineTest`: kalan aralık, `If-Range` seçimi,
+> iptalde checkpoint, flush hatası). `scripts/check_linux.ps1`: linux-x64, ASan/UBSan ve TSan
+> üçünde `ctest` 2/2 **PASSED** (3,2 dk); clang-tidy **6 = baseline**. `pre_commit run --all-files`
+> temiz.
 
 ##### S5a-2b — CLI, Ctrl+C, gerçek süreç testleri
 

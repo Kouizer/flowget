@@ -45,6 +45,7 @@ add_executable(flowget_integration_tests
                integration/probe_test.cpp
                integration/storage_io_test.cpp
                integration/resume_store_test.cpp
+               integration/segmented_engine_test.cpp
                support/http_test_server.cpp)
 # core/src is on the include path for the internal test seams that are not public API: file_replace.h
 # (atomic sidecar writes). Same idea as storage_detail.h, which is public only for tests.
