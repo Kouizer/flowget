@@ -365,7 +365,7 @@ TEST(SegmentedDownload, FallsBackOnShortSegmentBody) {
     EXPECT_EQ(read_file(options.output_path), payload);
 }
 
-TEST(SegmentedDownload, TransportErrorDoesNotFallBack) {
+TEST(SegmentedDownload, TransportErrorKeepsThePartialFile) {
     const std::string payload = make_payload(kPayloadSize);
     HttpTestServer server([&payload](const Request&) {
         Response response;
@@ -385,10 +385,11 @@ TEST(SegmentedDownload, TransportErrorDoesNotFallBack) {
     EXPECT_FALSE(summary.ok());
     EXPECT_FALSE(summary.fallback);
     EXPECT_EQ(summary.http.error, HttpError::connect);
-    EXPECT_FALSE(file_exists(options.output_path));
+    // S6 retries from what is durable; a transport error must not throw the bytes away.
+    EXPECT_TRUE(file_exists(options.output_path));
 }
 
-TEST(SegmentedDownload, CancelsAndRemovesPartialFile) {
+TEST(SegmentedDownload, CancelKeepsThePartialFile) {
     const std::string payload = make_payload(kPayloadSize);
     HttpTestServer server([&payload](const Request&) {
         Response response;
@@ -416,7 +417,8 @@ TEST(SegmentedDownload, CancelsAndRemovesPartialFile) {
     EXPECT_FALSE(summary.ok());
     EXPECT_EQ(summary.http.error, HttpError::aborted);
     EXPECT_FALSE(summary.fallback);
-    EXPECT_FALSE(file_exists(options.output_path));
+    // Cancellation is a pause, not a failure: the next run continues from these bytes.
+    EXPECT_TRUE(file_exists(options.output_path));
 }
 
 TEST(SegmentedDownload, EmptyResourceCreatesEmptyFileWithoutSegments) {

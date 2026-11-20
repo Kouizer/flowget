@@ -16,8 +16,9 @@ class Downloader {
 public:
     explicit Downloader(HttpClient& client);
 
-    // Writes to `options.output_path`, truncating an existing file. `options.connections` is
-    // clamped to [1, 64]; 1 skips probing entirely.
+    // Writes to `options.output_path`. A validated sidecar (S5) continues from the bytes already
+    // on disk; otherwise the file is truncated. `options.connections` is clamped to [1, 64]; 1
+    // skips probing entirely and never resumes (single-stream resume is S5b).
     DownloadSummary download(const DownloadOptions& options,
                              const ProgressCallback& on_progress = {},
                              const std::atomic<bool>* cancel = nullptr);

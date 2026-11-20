@@ -174,6 +174,81 @@ private:
     std::unique_ptr<IStorage> inner_;
 };
 
+// Accepts a bounded number of bytes, then fails every write. A failed write can leave a prefix on
+// disk; the checkpoint must never count bytes it did not acknowledge.
+class FailAfterStorage final : public IStorage {
+public:
+    FailAfterStorage(std::unique_ptr<IStorage> inner, std::shared_ptr<std::int64_t> accepted)
+        : inner_(std::move(inner)), accepted_(std::move(accepted)) {}
+
+    StorageResult open(const std::string& utf8_path, OpenMode mode) override {
+        return inner_->open(utf8_path, mode);
+    }
+
+    StorageResult reopen() override {
+        return inner_->reopen();
+    }
+
+    StorageResult close() override {
+        return inner_->close();
+    }
+
+    [[nodiscard]] bool is_open() const noexcept override {
+        return inner_->is_open();
+    }
+
+    StorageResult preallocate(FileOffset size) override {
+        return inner_->preallocate(size);
+    }
+
+    StorageResult write_at(FileOffset offset,
+                           const std::byte* data,
+                           std::size_t size,
+                           std::size_t& written) override {
+        const std::lock_guard<std::mutex> lock{mutex_};
+        constexpr std::int64_t kLimit = 2 * 1024 * 1024;
+        written = 0;
+        if (*accepted_ >= kLimit) {
+            return StorageResult{StorageError::write, 1, "injected write failure"};
+        }
+        const std::int64_t remaining = kLimit - *accepted_;
+        if (static_cast<std::int64_t>(size) <= remaining) {
+            const StorageResult result = inner_->write_at(offset, data, size, written);
+            *accepted_ += static_cast<std::int64_t>(written);
+            return result;
+        }
+        // The last write crosses the limit: keep the prefix that reached the file, then report the
+        // failure. A caller must not count the unacknowledged tail.
+        std::size_t part = 0;
+        const StorageResult result =
+            inner_->write_at(offset, data, static_cast<std::size_t>(remaining), part);
+        *accepted_ += static_cast<std::int64_t>(part);
+        written = part;
+        if (!result.ok()) {
+            return result;
+        }
+        return StorageResult{StorageError::write, 1, "injected write failure"};
+    }
+
+    StorageResult
+    read_at(FileOffset offset, std::byte* data, std::size_t size, std::size_t& read) override {
+        return inner_->read_at(offset, data, size, read);
+    }
+
+    StorageResult flush() override {
+        return inner_->flush();
+    }
+
+    StorageResult size(FileOffset& out) override {
+        return inner_->size(out);
+    }
+
+private:
+    std::unique_ptr<IStorage> inner_;
+    std::shared_ptr<std::int64_t> accepted_;
+    std::mutex mutex_;
+};
+
 class SegmentedEngineTest : public ::testing::Test {
 protected:
     DownloadOptions options(const HttpTestServer& server, const std::string& name) {
@@ -396,6 +471,48 @@ TEST_F(SegmentedEngineTest, FlushFailureEndsWithIoAndKeepsTheOldSidecar) {
     EXPECT_EQ(read_file(sidecar), previous);
     EXPECT_FALSE(file_exists(sidecar + ".tmp"));
     EXPECT_TRUE(file_exists(download.output_path));
+}
+
+TEST_F(SegmentedEngineTest, CheckpointNeverClaimsBytesThatFailedToWrite) {
+    const std::string payload = make_payload(static_cast<std::size_t>(4 * kMiB));
+    HttpTestServer server([&payload](const Request&) {
+        Response response;
+        response.status = 200;
+        response.honor_range = true;
+        response.body = payload;
+        return response;
+    });
+
+    DownloadOptions download = options(server, "failed-writes.bin");
+    const ProbeResult probe = make_probe(download.url, 4 * kMiB, "\"strong\"", "");
+    const std::vector<SegmentTask> tasks = {{Segment{0, kMiB}, 0},
+                                            {Segment{kMiB, kMiB}, 0},
+                                            {Segment{2 * kMiB, kMiB}, 0},
+                                            {Segment{3 * kMiB, kMiB}, 0}};
+
+    auto accepted = std::make_shared<std::int64_t>(0);
+    SegmentedSettings settings;
+    settings.storage_factory = [accepted] {
+        return std::make_unique<FailAfterStorage>(flowget::make_platform_storage(), accepted);
+    };
+    const SegmentedOutcome outcome =
+        run_segmented(download, probe, tasks, nullptr, nullptr, settings);
+
+    EXPECT_EQ(outcome.summary.http.error, HttpError::io);
+    EXPECT_NE(outcome.summary.message.find("injected write failure"), std::string::npos);
+
+    const std::string sidecar = flowget::resume_sidecar_path(download.output_path);
+    ASSERT_TRUE(file_exists(sidecar));
+    std::string contents;
+    std::string error;
+    ASSERT_TRUE(
+        flowget::detail::read_file_utf8(sidecar, flowget::kMaxResumeStateBytes, contents, error))
+        << error;
+    const ResumeParseResult parsed = flowget::parse_resume_state(contents);
+    ASSERT_TRUE(parsed.ok()) << parsed.error;
+    EXPECT_GT(parsed.state.bytes_done(), 0);
+    EXPECT_LE(parsed.state.bytes_done(), *accepted);
+    EXPECT_LT(*accepted, 4 * kMiB);
 }
 
 } // namespace

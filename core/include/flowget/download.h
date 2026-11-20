@@ -27,6 +27,14 @@ struct DownloadOptions {
     // Concurrent connections for the segmented engine, clamped to [1, 64]. 1 means "single stream
     // without probing", which is also what a server without range support gets.
     int connections = 8;
+    // When true (the default), a valid sidecar makes a segmented download continue from the bytes
+    // already on disk. false deletes the sidecar and starts from zero.
+    bool resume = true;
+    // Called once, before the first data request of a segmented download, after the resume
+    // decision. The argument is the number of bytes already durable: 0 for a fresh download, the
+    // full size for an output that was already complete. Single-stream downloads (S5b) do not call
+    // it. Must not throw.
+    std::function<void(std::int64_t)> on_resume;
 };
 
 struct DownloadProgress {
@@ -49,12 +57,19 @@ struct DownloadSummary {
     std::int64_t bytes_written = 0;
     // Set for failures outside the HTTP layer (file creation, disk write, path handling).
     std::string message;
-    // Connections actually used: 0 for an empty resource, 1 for a single stream.
+    // Connections actually used: 0 for an empty resource or an already-complete output, 1 for a
+    // single stream.
     int connections = 1;
     // True when the segmented attempt was abandoned and the file was fetched again as one stream.
     bool fallback = false;
     // Why the fallback happened ("server ignored Range", "Content-Range mismatch", ...).
     std::string fallback_reason;
+    // True when a validated sidecar was used, including an output that was already complete.
+    bool resumed = false;
+    // Bytes that were already durable when the resumed transfer started (0 when not resumed).
+    std::int64_t resumed_from_bytes = 0;
+    // Why a sidecar was ignored, or why the attempt restarted from zero. Empty on a clean run.
+    std::string resume_note;
 
     [[nodiscard]] bool ok() const {
         return http.ok() && message.empty();

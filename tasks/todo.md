@@ -65,7 +65,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | **TAMAMLANDI** |
 | S4b | S4b-lite: clang-tidy dosya listesi + gerçek bulgular + baseline (`--warnings-as-errors` S8'e ertelendi) | **TAMAMLANDI** |
-| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | **S5a-2a UYGULANIYOR** — motor commit'i hazır; Downloader + ölçüm açık |
+| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | **S5a-2a UYGULANIYOR** — motor + Downloader commit'leri hazır; fuzz + ölçüm açık |
 | S6 | `RetryPolicy` + `RateLimiter` | |
 | S7 | `DynamicSplitter` + benchmark tablosu | |
 | S8 | `HashVerifier` + hata modeli + CLI bayrakları + RSS ölçümü | |
@@ -652,7 +652,7 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
 
 **Dosyalar**
 
-- [ ] `core/include/flowget/download.h` — `resume`, `on_resume`, summary alanları.
+- [x] `core/include/flowget/download.h` — `resume`, `on_resume`, summary alanları.
 - [x] `core/src/segmented_download.{h,cpp}` — `SegmentTask`, kalan aralık, `If-Range` (güçlü ETag
       yoksa Last-Modified), checkpoint, `resume_invalidated` sonucu, `StorageFactory`/interval
       seam'i; segment istekleri probe'un güncel effective URL'ine gider.
@@ -664,15 +664,15 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
       sidecar'a dokunmaz.
 - [x] `core/src/file_replace.{h,cpp}` (veya `file_io.{h,cpp}`) — `read_file_utf8` (boyut sınırı +
       UTF-8 yol); `resume_sidecar_path` / `remove_stale_sidecar_temp` kullanımı.
-- [ ] `core/src/downloader.cpp` — sidecar oku → doğrula → probe karşılaştır → devam/baştan; tamam
+- [x] `core/src/downloader.cpp` — sidecar oku → doğrula → probe karşılaştır → devam/baştan; tamam
       kontrolü; `.tmp` temizliği; fallback/hata/başarı yollarında sidecar kararı.
 - [ ] `tests/unit/resume_state_test.cpp` — truncation/mutation fuzz (aşağıda).
 - [x] `tests/unit/resume_checkpoint_test.cpp` — flush hatası invariantı: veri flush'ı başarısızsa
       sidecar baytları değişmez, `.tmp` kalmaz; boş sidecar yolunda veri hiç flush edilmez. Motor
       seviyesinde enjekte edilen hata commit (b)'de.
-- [ ] `tests/integration/downloader_test.cpp` (veya yeni `resume_download_test.cpp`) — API + cancel
-      jetonu senaryoları.
-- [ ] `tests/CMakeLists.txt`, `core/CMakeLists.txt`.
+- [x] `tests/integration/downloader_test.cpp` (veya yeni `resume_download_test.cpp`) — API + cancel
+      jetonu senaryoları (`resume_download_test.cpp`, 12 test).
+- [x] `tests/CMakeLists.txt`, `core/CMakeLists.txt`.
 
 **Resume doğrulama sırası (`Downloader`)**
 
@@ -692,38 +692,41 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
 
 **Testler (S5a-2a; süreç öldürme yok, API + cancel jetonu)**
 
-- [ ] **%40'ta iptal → resume:** throttle'lı yerel sunucu; progress callback bayt ≥ %40 olunca
+- [x] **%40'ta iptal → resume:** throttle'lı yerel sunucu; progress callback bayt ≥ %40 olunca
       `cancel=true`; `aborted`, sidecar var; ikinci `download` → `resumed=true`,
       `resumed_from_bytes>0`, içerik SHA-256 birebir; sunucuya giden `Range` `done`'dan başlıyor,
       `If-Range` doğru validator.
-- [ ] **Periyodik checkpoint:** >2 s süren throttle'lı indirme; iptalden önce sidecar en az bir kez
-      güncellenmiş (`done > 0`) ve içerik geçerli.
+- [x] **Periyodik checkpoint:** >2 s süren throttle'lı indirme; iptalden önce sidecar en az bir kez
+      güncellenmiş (`done > 0`) ve içerik geçerli. (`ResumeDownload.PublishesPeriodicCheckpoints…`:
+      ayrı iş parçacığı 50 ms'de sidecar okur, arada `0 < done < total` görür.)
 - [x] **Flush hatası sidecar'ı ilerletmez:** `publish_resume_checkpoint` sahte storage'ın `flush`'ı
       hata döndürünce `false`; sidecar baytları **değişmez**, `.tmp` kalmaz (birim). Motor seviyesinde
       `StorageFactory` ile enjekte edilen hata → `io` hatası, sidecar ilerlemez (entegrasyon).
-- [ ] **`done` yalnız başarılı yazmadan sonra:** sahte storage N. yazmada hata; iptal/checkpoint
+- [x] **`done` yalnız başarılı yazmadan sonra:** sahte storage N. yazmada hata; iptal/checkpoint
       sonrası sidecar'daki `done`, başarıyla yazılan baytları aşmaz.
-- [ ] **ETag değişimi:** ikinci çalıştırmada sunucu yeni ETag/gövde → `resumed=false`, sıfırdan,
+      (`SegmentedEngineTest.CheckpointNeverClaimsBytesThatFailedToWrite`.)
+- [x] **ETag değişimi:** ikinci çalıştırmada sunucu yeni ETag/gövde → `resumed=false`, sıfırdan,
       yeni içerik doğru, note nedeni taşır.
-- [ ] **Yönlendirme hedefi değişir, ETag aynı (özgün URL kuralı):** ilk çalıştırma A → B/v1; kısmi
+- [x] **Yönlendirme hedefi değişir, ETag aynı (özgün URL kuralı):** ilk çalıştırma A → B/v1; kısmi
       indirme sonrası ikinci çalıştırmada A → B/v2 yönlendirir, ETag aynı → `resumed=true`, içerik
       SHA-256 birebir; segment istekleri **B/v2**'ye gider, `If-Range` taşır. Sidecar `url` alanı
       A (özgün kullanıcı URL'i) kalır; effective URL karşılaştırılsaydı test kırmızı olurdu.
-- [ ] **Zayıf ETag → Last-Modified:** `ETag: W/"..."` + `Last-Modified`; resume çalışır, `If-Range`
+- [x] **Zayıf ETag → Last-Modified:** `ETag: W/"..."` + `Last-Modified`; resume çalışır, `If-Range`
       Last-Modified taşır.
-- [ ] **Validator yok:** resume yok; sidecar silinir, sıfırdan.
-- [ ] **`If-Range`'e 200:** sunucu validator uyuşmayınca 200 döner → dosya + sidecar silinir, bir kez
+- [x] **Validator yok:** resume yok; sidecar silinir, sıfırdan. (Motor da validator yokken hiç
+      checkpoint yazmaz; birim/entegrasyon testi mevcut.)
+- [x] **`If-Range`'e 200:** sunucu validator uyuşmayınca 200 döner → dosya + sidecar silinir, bir kez
       yeniden probe + taze plan; içerik doğru; ikinci 200'de tek akışa düşer.
-- [ ] **Bozuk sidecar 5 varyantı:** geçersiz JSON, bilinmeyen `schema_version`, eksik alan,
+- [x] **Bozuk sidecar 5 varyantı:** geçersiz JSON, bilinmeyen `schema_version`, eksik alan,
       bitişik olmayan segment, `done` aralık dışı → sidecar silinir, taze indirme, içerik doğru.
-- [ ] **Dosya silinmiş / boyut değişmiş:** taze indirme; eski sidecar silinir.
-- [ ] **Kenar 1 — sidecar yok + çıktı var:** çöp içerikli dosya truncate edilir, taze indirme,
-      içerik doğru.
-- [ ] **Kenar 2 — tüm segmentler done, sidecar silinmemiş:** boyut doğrulanır, ağ isteği yok,
+- [x] **Dosya silinmiş / boyut değişmiş:** taze indirme; eski sidecar silinir.
+- [x] **Kenar 1 — sidecar yok + çıktı var:** çöp içerikli dosya truncate edilir, taze indirme,
+      içerik doğru. (`SegmentedDownload.OverwritesExistingFile` aynı yolu kapsar.)
+- [x] **Kenar 2 — tüm segmentler done, sidecar silinmemiş:** boyut doğrulanır, ağ isteği yok,
       tamam sayılır, sidecar silinir.
-- [ ] **Kenar 3 — `resume=false` mevcut sidecar'ı siler:** geçerli sidecar + kısmi dosya varken
+- [x] **Kenar 3 — `resume=false` mevcut sidecar'ı siler:** geçerli sidecar + kısmi dosya varken
       `resume=false` → sidecar yok, dosya truncate, taze içerik.
-- [ ] **Yanlış `Content-Length`:** resume isteğinde segment `Content-Length` uyuşmazlığı → fallback
+- [x] **Yanlış `Content-Length`:** resume isteğinde segment `Content-Length` uyuşmazlığı → fallback
       (tek akış) ve içerik doğru; sidecar silinmiş.
 - [ ] **Fuzz/truncation (S5a-1 parser'ı):** geçerli sidecar'ı **her bayt konumunda** kes ve rastgele
       bayt boz (sabit tohum, örn. 1000 mutasyon); her girdi `parse_resume_state`'e verilir; çökme yok,
@@ -740,6 +743,17 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
 > iptalde checkpoint, flush hatası). `scripts/check_linux.ps1`: linux-x64, ASan/UBSan ve TSan
 > üçünde `ctest` 2/2 **PASSED** (3,2 dk); clang-tidy **6 = baseline**. `pre_commit run --all-files`
 > temiz.
+
+> **Dilim commit'i (c) kanıtı (2026-11-20):** `resume`, `on_resume`, `resumed`,
+> `resumed_from_bytes`, `resume_note` API'de; `Downloader` karar ağacı (özgün URL doğrulaması,
+> tamam kontrolü, `resume=false` katı sidecar silme, `.tmp` temizliği, tek yeniden probe/plan,
+> fallback/hata yollarında sidecar kararı) tamamlandı. MSVC 19.52 `/W4 /WX` build temiz;
+> `ctest` 2/2 — **77 birim + 74 entegrasyon** (12 yeni `ResumeDownload` senaryosu + `done`
+> değişmezi için `SegmentedEngineTest.CheckpointNeverClaimsBytesThatFailedToWrite`).
+> `scripts/check_linux.ps1`: linux-x64, ASan/UBSan ve TSan `ctest` 2/2 **PASSED** (5,2 dk);
+> clang-tidy **6 = baseline** (yeni bulgu yok). `pre_commit run --all-files` temiz. Sidecar
+> okumaları `IStorage::open(read_only)` üzerinden `FILE_SHARE_READ|WRITE|DELETE` ile yapılıyor
+> (paylaşım dersi `tasks/lessons.md`, 2026-11-20).
 
 ##### S5a-2b — CLI, Ctrl+C, gerçek süreç testleri
 
