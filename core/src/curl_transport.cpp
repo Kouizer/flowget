@@ -147,7 +147,7 @@ public:
             if (message->msg == CURLMSG_DONE) {
                 // libcurl's CURLMsg::data is a union by design; `result` is the documented member
                 // after CURLMSG_DONE and has no variant equivalent.
-                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access): documented union member
                 transfer_code = message->data.result;
             }
         }

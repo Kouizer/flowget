@@ -517,7 +517,7 @@ SegmentedOutcome run_segmented(const DownloadOptions& options,
             Transfer& transfer = *iterator->second;
             // libcurl's CURLMsg::data is a union by design; `result` is the documented member after
             // CURLMSG_DONE and has no variant equivalent.
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access): documented union member
             transfer.result = message->data.result;
             transfer.finished = true;
             segment_finished = true;

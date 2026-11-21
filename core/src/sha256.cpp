@@ -97,7 +97,7 @@ std::string Sha256::hex_digest() {
     for (unsigned int index = 0; index < length; ++index) {
         // `index` is bounded by `length`, the digest size EVP just reported, so this subscript
         // cannot escape the array; `.at()` would add a throw path for no reachable case.
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index): bounded by length
         const auto byte = static_cast<unsigned int>(digest[index]);
         result.push_back(kHexDigits[(byte >> 4) & 0x0FU]);
         result.push_back(kHexDigits[byte & 0x0FU]);
