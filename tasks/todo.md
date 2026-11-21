@@ -746,7 +746,9 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
       - Ayrıntılı tablo: `## Ölçüm ve kanıt tablosu` → "S5a-2a checkpoint maliyeti".
 - [x] Kanıt: MSVC build + `ctest` (79 birim + 75 entegrasyon), `check_linux.ps1`
       (debug/ASan/TSan hepsi PASSED, 4,9 dk), `pre_commit`, clang-tidy baseline 6 (yeni bulgu yok),
-      performans ölçümü; CI run #16 (`137b664`) üç job yeşil.
+      performans ölçümü; **CI run #17, commit `8d0aaec` — üç job yeşil** (Windows MSVC, Linux Clang +
+      ASan/UBSan, GPL denylist; 2026-11-21,
+      [run #17](https://github.com/Kouizer/flowget/actions/runs/44918120502)).
 
 > **Dilim commit'i (b) kanıtı (2026-11-20):** MSVC 19.52 `/W4 /WX` build temiz; `ctest` 2/2 —
 > **77 birim + 61 entegrasyon** (5 yeni `SegmentedEngineTest`: kalan aralık, `If-Range` seçimi,
@@ -777,7 +779,8 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
 > temiz; `ctest` 2/2 — **79 birim + 75 entegrasyon**. `scripts/check_linux.ps1`: linux-x64,
 > ASan/UBSan ve TSan `ctest` 2/2 **PASSED** (4,9 dk); clang-tidy **6 = baseline**.
 > `pre_commit run --all-files` temiz. Performans: WAN 5 çiftte −%2,7; loopback 61 çiftte +%1,9
-> (eşleşmiş medyan 0,988, GA [0,926; 1,066]) — eşik ~%5 karşılanıyor.
+> (eşleşmiş medyan 0,988, GA [0,926; 1,066]) — ölçülebilir yavaşlama yok; GA +%6,6'ya kadar bir farkı
+> dışlamıyor, S7'de sessiz makinede yeniden doğrulanacak.
 
 ##### S5a-2b — CLI, Ctrl+C, gerçek süreç testleri
 
@@ -1103,10 +1106,13 @@ tüm komutlar sıfırdan çalışıyor.
 A = S5a-1 CLI (`d23ea1f`, checkpoint yok); B = checkpoint'li yeni CLI. Aynı makine, aynı sunucu,
 `--connections 8`, A,B / B,A sıralı çiftler. Ölçülen: duvar saati; `exit≠0` koşular alınmadı.
 
-| Ölçüm | A | B | Fark (medyan) | Eşik |
+| Ölçüm | A | B | Fark (medyan) | Değerlendirme |
 |---|---|---|---|---|
-| thinkbroadband 100 MB, 5 çift | 4,680 s | 4,553 s | −%2,7 | ≤ +%5 ✔ |
-| loopback 200 MB, 61 çift | 0,574 s | 0,585 s | +%1,9 | ≤ +%5 ✔ |
+| thinkbroadband 100 MB, 5 çift | 4,680 s | 4,553 s | −%2,7 | ölçülebilir yavaşlama yok |
+| loopback 200 MB, 61 çift | 0,574 s | 0,585 s | +%1,9 | GA üst ucu +%6,6 → fark dışlanamıyor |
+
+**Değerlendirme:** ölçülebilir yavaşlama yok; loopback GA [0,926; 1,066] +%6,6'ya kadar bir farkı
+dışlamıyor; S7'de sessiz makinede yeniden doğrula.
 
 Eşleşmiş oran (B/A) medyanı: WAN 0,891; loopback **0,988** (%95 bootstrap GA [0,926; 1,066]).
 Loopback'te ham süreler 0,35–5,1 s arasında salındı (makine yükü); batch medyanları −%7…+%23
