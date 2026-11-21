@@ -65,7 +65,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | **TAMAMLANDI** |
 | S4b | S4b-lite: clang-tidy dosya listesi + gerçek bulgular + baseline (`--warnings-as-errors` S8'e ertelendi) | **TAMAMLANDI** |
-| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | **S5a-2a UYGULANIYOR** — motor + Downloader commit'leri hazır; fuzz + ölçüm açık |
+| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | **S5a-2a TAMAMLANDI** — S5a-2b (CLI, Ctrl+C) sırada |
 | S6 | `RetryPolicy` + `RateLimiter` | |
 | S7 | `DynamicSplitter` + benchmark tablosu | |
 | S8 | `HashVerifier` + hata modeli + CLI bayrakları + RSS ölçümü | |
@@ -666,7 +666,8 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
       UTF-8 yol); `resume_sidecar_path` / `remove_stale_sidecar_temp` kullanımı.
 - [x] `core/src/downloader.cpp` — sidecar oku → doğrula → probe karşılaştır → devam/baştan; tamam
       kontrolü; `.tmp` temizliği; fallback/hata/başarı yollarında sidecar kararı.
-- [ ] `tests/unit/resume_state_test.cpp` — truncation/mutation fuzz (aşağıda).
+- [x] `tests/unit/resume_state_test.cpp` — truncation/mutation fuzz (aşağıda): 2 test, her bayt
+      kesme + 1000 sabit tohumlu mutasyon.
 - [x] `tests/unit/resume_checkpoint_test.cpp` — flush hatası invariantı: veri flush'ı başarısızsa
       sidecar baytları değişmez, `.tmp` kalmaz; boş sidecar yolunda veri hiç flush edilmez. Motor
       seviyesinde enjekte edilen hata commit (b)'de.
@@ -728,15 +729,24 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
       `resume=false` → sidecar yok, dosya truncate, taze içerik.
 - [x] **Yanlış `Content-Length`:** resume isteğinde segment `Content-Length` uyuşmazlığı → fallback
       (tek akış) ve içerik doğru; sidecar silinmiş.
-- [ ] **Fuzz/truncation (S5a-1 parser'ı):** geçerli sidecar'ı **her bayt konumunda** kes ve rastgele
-      bayt boz (sabit tohum, örn. 1000 mutasyon); her girdi `parse_resume_state`'e verilir; çökme yok,
-      sonuç ya geçerli invariant'larla `ok()` ya da hata. `linux-x64-asan`/UBSan temiz.
-- [ ] **Performans (S5a-2a şartı):** 100 MB, 8 bağlantı, checkpoint açık; aynı komut/sunucu
-      (S7 baseline'ı `download.thinkbroadband.com/100MB.zip`, 3,66 s) ile en az 3 tekrar; medyan
-      **≤ ~3,84 s** (en fazla ~%5 yavaş). Sonuç `## Ölçüm ve kanıt tablosu`na işlenir. Baseline
-      makine/sunucu farklıysa aynı oturumda baseline yeniden ölçülür ve fark raporlanır.
-- [ ] Kanıt: MSVC build + `ctest`, `check_linux.ps1` (debug/ASan/TSan), `pre_commit`, clang-tidy
-      baseline 6 (yeni bulgu yok), performans ölçümü.
+- [x] **Fuzz/truncation (S5a-1 parser'ı):** `ResumeState.EveryTruncationEitherParsesOrFailsCleanly`
+      geçerli sidecar metnini 0..N **her bayt konumunda** keser (N+1 girdi);
+      `ResumeState.FixedSeedMutationsNeverProduceAnInvalidState` sabit tohumla (`0xC0FFEE`) 1000
+      mutasyon üretir (1–3 bayt değişimi). Her sonuç ya geçerli invariant'larla `ok()` (şema,
+      `total_bytes > 0`, boş olmayan URL, validator, bitişik segmentler, `0 ≤ done ≤ length`,
+      toplam = `total_bytes`) ya da boş olmayan hata. `linux-x64-asan`/UBSan ve TSan temiz.
+- [x] **Performans (S5a-2a şartı):** A = S5a-1 CLI (`d23ea1f` worktree build), B = checkpoint'li yeni
+      CLI; A,B / B,A sıralı çiftler, aynı sunucu, 8 bağlantı. Eşik: medyan ≤ ~%5 yavaş.
+      - thinkbroadband 100 MB, 5 çift (aralarda 10 s): A medyan **4,680 s**, B **4,553 s** →
+        **−%2,7** (B daha hızlı); eşleşmiş medyan oran 0,891. Aralıksız koşuda sunucu 429/403
+        döndürdü; `exit≠0` koşular tabloya alınmadı (`tasks/lessons.md`, 2026-11-21).
+      - loopback 200 MB, 61 çift (3 batch): A medyan **0,574 s**, B **0,585 s** → **+%1,9**;
+        eşleşmiş medyan oran **0,988**, %95 bootstrap GA **[0,926; 1,066]** → sıfır fark ayırt
+        edilemiyor. Batch medyanları makine yükü yüzünden −%7…+%23 salındı (tek koşu 0,35–5,1 s).
+      - Ayrıntılı tablo: `## Ölçüm ve kanıt tablosu` → "S5a-2a checkpoint maliyeti".
+- [x] Kanıt: MSVC build + `ctest` (79 birim + 75 entegrasyon), `check_linux.ps1`
+      (debug/ASan/TSan hepsi PASSED, 4,9 dk), `pre_commit`, clang-tidy baseline 6 (yeni bulgu yok),
+      performans ölçümü; CI run #16 (`137b664`) üç job yeşil.
 
 > **Dilim commit'i (b) kanıtı (2026-11-20):** MSVC 19.52 `/W4 /WX` build temiz; `ctest` 2/2 —
 > **77 birim + 61 entegrasyon** (5 yeni `SegmentedEngineTest`: kalan aralık, `If-Range` seçimi,
@@ -753,7 +763,21 @@ checkpoint'te sidecar'ı çökme tutarlı biçimde güncelle; sunucu değiştiys
 > `scripts/check_linux.ps1`: linux-x64, ASan/UBSan ve TSan `ctest` 2/2 **PASSED** (5,2 dk);
 > clang-tidy **6 = baseline** (yeni bulgu yok). `pre_commit run --all-files` temiz. Sidecar
 > okumaları `IStorage::open(read_only)` üzerinden `FILE_SHARE_READ|WRITE|DELETE` ile yapılıyor
-> (paylaşım dersi `tasks/lessons.md`, 2026-11-20).
+> (paylaşım dersi `tasks/lessons.md`, 2026-11-20). **CI doğrulaması:** run #16, commit `137b664` —
+> üç job da yeşil (Windows MSVC, Linux Clang + ASan/UBSan, GPL denylist).
+
+> **Dilim commit'i (d) kanıtı (2026-11-21):** Parser fuzz'ı (her bayt kesme + 1000 sabit tohumlu
+> mutasyon), sidecar **silme** paylaşım testi ve performans ölçümü eklendi. Plan-test eşlemesi:
+> özgün URL → `ResumeDownload.RedirectTargetMayChangeWhileTheOriginalUrlResumes`; Windows paylaşım
+> bayrakları → `ResumeStoreTest.ReplacesTheSidecarWhileAReaderHasItOpen` +
+> `ResumeStoreTest.DeletesTheSidecarWhileAReaderHasItOpen`; flush invariantı →
+> `ResumeCheckpoint.FlushFailureLeavesThePreviousSidecarUntouched` +
+> `SegmentedEngineTest.FlushFailureEndsWithIoAndKeepsTheOldSidecar`; `done` değişmezi →
+> `SegmentedEngineTest.CheckpointNeverClaimsBytesThatFailedToWrite`. MSVC 19.52 `/W4 /WX` build
+> temiz; `ctest` 2/2 — **79 birim + 75 entegrasyon**. `scripts/check_linux.ps1`: linux-x64,
+> ASan/UBSan ve TSan `ctest` 2/2 **PASSED** (4,9 dk); clang-tidy **6 = baseline**.
+> `pre_commit run --all-files` temiz. Performans: WAN 5 çiftte −%2,7; loopback 61 çiftte +%1,9
+> (eşleşmiş medyan 0,988, GA [0,926; 1,066]) — eşik ~%5 karşılanıyor.
 
 ##### S5a-2b — CLI, Ctrl+C, gerçek süreç testleri
 
@@ -1073,6 +1097,21 @@ tüm komutlar sıfırdan çalışıyor.
 | Resume kaybı (kill -9) | ≈ checkpoint aralığı (~2 s) | | | | |
 | UI kare süresi @ 20 MB/s | < 16 ms | | | | |
 | Pil tüketimi (30 dk, Wi-Fi) | ölçülür | | | | |
+
+### S5a-2a checkpoint maliyeti (2026-11-21)
+
+A = S5a-1 CLI (`d23ea1f`, checkpoint yok); B = checkpoint'li yeni CLI. Aynı makine, aynı sunucu,
+`--connections 8`, A,B / B,A sıralı çiftler. Ölçülen: duvar saati; `exit≠0` koşular alınmadı.
+
+| Ölçüm | A | B | Fark (medyan) | Eşik |
+|---|---|---|---|---|
+| thinkbroadband 100 MB, 5 çift | 4,680 s | 4,553 s | −%2,7 | ≤ +%5 ✔ |
+| loopback 200 MB, 61 çift | 0,574 s | 0,585 s | +%1,9 | ≤ +%5 ✔ |
+
+Eşleşmiş oran (B/A) medyanı: WAN 0,891; loopback **0,988** (%95 bootstrap GA [0,926; 1,066]).
+Loopback'te ham süreler 0,35–5,1 s arasında salındı (makine yükü); batch medyanları −%7…+%23
+arasında değiştiği için tek batch'e bakılmadı, eşleşmiş oran ve bootstrap GA raporlandı
+(`tasks/lessons.md`, 2026-11-21).
 
 ---
 

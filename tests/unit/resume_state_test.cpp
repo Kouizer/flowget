@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -274,6 +275,59 @@ TEST(ResumeState, BuildsSidecarPathsNextToTheOutput) {
     EXPECT_EQ(flowget::resume_sidecar_temp_path("out.bin"), "out.bin.flowget.tmp");
     const std::string non_ascii = "İndirilenler/İndirilen_çğış.bin";
     EXPECT_EQ(flowget::resume_sidecar_path(non_ascii), non_ascii + ".flowget");
+}
+
+// Every accepted sidecar must describe a file the engine can resume safely. Rejected input only
+// needs a non-empty reason; the parser is the security boundary, so it may never crash or throw.
+void expect_parser_invariants(const ResumeParseResult& result) {
+    if (!result.ok()) {
+        EXPECT_FALSE(result.error.empty());
+        return;
+    }
+    const ResumeState& state = result.state;
+    ASSERT_FALSE(state.segments.empty());
+    EXPECT_LE(state.segments.size(), kMaxResumeSegments);
+    EXPECT_EQ(state.schema_version, kResumeSchemaVersion);
+    EXPECT_GT(state.total_bytes, 0);
+    EXPECT_FALSE(state.url.empty());
+    EXPECT_TRUE(flowget::has_resume_validator(state));
+
+    std::int64_t next_start = 0;
+    for (const ResumeSegment& segment : state.segments) {
+        EXPECT_EQ(segment.start, next_start);
+        EXPECT_GT(segment.end, segment.start);
+        EXPECT_LE(segment.end, state.total_bytes);
+        EXPECT_GE(segment.done, 0);
+        EXPECT_LE(segment.done, segment.length());
+        next_start = segment.end;
+    }
+    EXPECT_EQ(next_start, state.total_bytes);
+}
+
+TEST(ResumeState, EveryTruncationEitherParsesOrFailsCleanly) {
+    const std::string text = valid_json();
+    for (std::size_t length = 0; length <= text.size(); ++length) {
+        SCOPED_TRACE("truncated at " + std::to_string(length));
+        expect_parser_invariants(parse_resume_state(std::string_view{text}.substr(0, length)));
+    }
+}
+
+TEST(ResumeState, FixedSeedMutationsNeverProduceAnInvalidState) {
+    const std::string original = valid_json();
+    std::mt19937 engine{0xC0FFEEU};
+    std::uniform_int_distribution<std::size_t> position(0, original.size() - 1);
+    std::uniform_int_distribution<int> byte_value(0, 255);
+    std::uniform_int_distribution<int> edits(1, 3);
+
+    for (int iteration = 0; iteration < 1000; ++iteration) {
+        std::string mutated = original;
+        const int count = edits(engine);
+        for (int edit = 0; edit < count; ++edit) {
+            mutated[position(engine)] = static_cast<char>(byte_value(engine));
+        }
+        SCOPED_TRACE("mutation " + std::to_string(iteration));
+        expect_parser_invariants(parse_resume_state(mutated));
+    }
 }
 
 } // namespace

@@ -1,6 +1,7 @@
 #include <flowget/resume_state.h>
 #include <flowget/storage.h>
 
+#include "download_util.h"
 #include "file_replace.h"
 
 #include <cstddef>
@@ -221,6 +222,23 @@ TEST_F(ResumeStoreTest, ReplacesTheSidecarWhileAReaderHasItOpen) {
     ASSERT_TRUE(read_file_utf8(sidecar, flowget::kMaxResumeStateBytes, contents, error)) << error;
     EXPECT_EQ(contents, "next");
     EXPECT_FALSE(exists(sidecar + ".tmp"));
+}
+
+TEST_F(ResumeStoreTest, DeletesTheSidecarWhileAReaderHasItOpen) {
+    const std::string sidecar = path("out.bin.flowget");
+    std::string error;
+    ASSERT_TRUE(flowget::detail::write_file_atomically(sidecar, "previous", error)) << error;
+
+    // `Downloader::forget_sidecar` deletes the sidecar while another process (or this reader) may
+    // still hold it open. Windows only allows that with FILE_SHARE_DELETE; without it the delete
+    // fails with ERROR_SHARING_VIOLATION and a stale sidecar survives the next run
+    // (tasks/lessons.md, 2026-11-20).
+    const std::unique_ptr<IStorage> reader = flowget::make_platform_storage();
+    const flowget::StorageResult opened = reader->open(sidecar, OpenMode::read_only);
+    ASSERT_TRUE(opened.ok()) << opened.message;
+
+    ASSERT_TRUE(flowget::detail::remove_file(sidecar, error)) << error;
+    EXPECT_FALSE(exists(sidecar));
 }
 
 TEST_F(ResumeStoreTest, ReadsThroughANonAsciiPath) {

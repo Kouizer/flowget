@@ -432,4 +432,20 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
   handle'ı açıkken atomik yazma yapıyor; paylaşım bayrağı düşerse **veya** `ReplaceFileW` yerine
   `MoveFileExW`'ye dönülürse test Windows'ta kırmızıya döner. Kural: çalışma anında başka bir
   yazarın rename edebileceği dosyalar `ifstream` ile açılmaz; Windows'ta açık hedefi değiştirmek
-  için `ReplaceFileW` kullanılır.
+  için `ReplaceFileW` kullanılır. Silme tarafı da aynı bayrağa bağlı:
+  `ResumeStoreTest.DeletesTheSidecarWhileAReaderHasItOpen` açık handle varken silmeyi doğrular.
+
+### 2026-11-21 — A/B ölçümü: aynı sunucudan ardışık indirme 429/403 yer, loopback gürültüye teslim
+- Belirti: checkpoint'li sürümü S5a-1 CLI'sine karşı ölçerken thinkbroadband ardışık koşularda
+  `exit=1` döndü (gövde yok, dosya oluşmadı); loopback 200 MB koşularında aynı varyant 0,45 s ile
+  8,3 s arasında salındı, batch medyanları −%7…+%23 arasında değişti.
+- Kök neden: (1) sunucu hız sınırı — aynı istemciden aralıksız büyük dosya istekleri 429/403 ile
+  reddediliyor; ölçülen şey indirme süresi değil hata oluyor. (2) 200 MB loopback indirmesi ~0,5 s
+  sürdüğü için toplam süre makine yüküne teslim (Defender, disk yazımı, Python test sunucusu);
+  tek batch'in medyanı tekrarlanabilir değil.
+- Düzeltme/ölçüm kuralı: WAN'da çiftler arasında ~10 s bekle ve `exit≠0` koşuyu tabloya alma;
+  loopback'te en az 20 çift topla, **eşleşmiş oranın** (B/A) medyanını ve bootstrap %95 GA'sını
+  raporla, ham medyan farkını yanına yaz. Sonuç: WAN −%2,7 (5 çift), loopback +%1,9 (61 çift,
+  eşleşmiş medyan 0,988, GA [0,926; 1,066]).
+- Tekrarını önleyen kontrol: benchmark betiği `exit` kodunu ve yazılan baytı kaydeder; sıfır olmayan
+  çıkış satırı istatistiğe girmez. Tek batch'lik medyan farkına bakıp "regresyon var" denmez.
