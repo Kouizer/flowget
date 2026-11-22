@@ -6,6 +6,8 @@
 #include <flowget/probe.h>
 #include <flowget/segment_planner.h>
 
+#include "console_cancel.h"
+
 #include <cctype>
 #include <charconv>
 #include <cinttypes>
@@ -116,6 +118,56 @@ bool parse_connections(std::string_view text, int& out) {
     return true;
 }
 
+// Runs one download with Ctrl+C wired to the engine's cancel token and reports the result. Returns
+// the process exit code: 0 on success, 130 when the user interrupted (shell convention), 1 for any
+// other failure.
+int download_with_cancel(const flowget::DownloadOptions& options) {
+    flowget::HttpClient client;
+    flowget::Downloader downloader{client};
+
+    flowget::DownloadSummary summary;
+    {
+        // The handler lives only for the duration of the transfer: Ctrl+C outside it keeps the
+        // platform default, and a second interrupt restores it even here.
+        const flowget::cli::ConsoleCancelHandler cancel_handler;
+        if (!cancel_handler.installed()) {
+            std::fprintf(stderr,
+                         "warning: cannot install the Ctrl+C handler; an interrupt will not be "
+                         "resumable\n");
+        }
+        summary = downloader.download(
+            options,
+            [](const flowget::DownloadProgress& progress) { print_progress(progress); },
+            &flowget::cli::ConsoleCancelHandler::token());
+    }
+    std::fprintf(stderr, "\n");
+
+    if (!summary.ok()) {
+        const std::string& detail =
+            !summary.message.empty() ? summary.message : summary.http.message;
+        print_error(detail.empty() ? flowget::http_error_name(summary.http.error) : detail);
+        if (summary.http.error == flowget::HttpError::aborted) {
+            std::fprintf(stderr,
+                         "note: the partial file and its resume sidecar were kept; rerun the same "
+                         "command to continue\n");
+            // 128 + SIGINT, the shell convention for "terminated by Ctrl+C".
+            return 130;
+        }
+        return 1;
+    }
+
+    if (summary.fallback) {
+        std::fprintf(stderr,
+                     "note: ranged download failed (%s); saved over a single connection\n",
+                     summary.fallback_reason.c_str());
+    }
+    std::printf("saved %" PRId64 " bytes to %s using %d connection(s)\n",
+                summary.bytes_written,
+                options.output_path.c_str(),
+                summary.connections);
+    return 0;
+}
+
 int run_get(const std::vector<std::string>& args) {
     std::string url;
     flowget::DownloadOptions options;
@@ -187,30 +239,7 @@ int run_get(const std::vector<std::string>& args) {
         std::fflush(stderr);
     };
 
-    flowget::HttpClient client;
-    flowget::Downloader downloader{client};
-
-    const flowget::DownloadSummary summary = downloader.download(
-        options, [](const flowget::DownloadProgress& progress) { print_progress(progress); });
-    std::fprintf(stderr, "\n");
-
-    if (!summary.ok()) {
-        const std::string& detail =
-            !summary.message.empty() ? summary.message : summary.http.message;
-        print_error(detail.empty() ? flowget::http_error_name(summary.http.error) : detail);
-        return 1;
-    }
-
-    if (summary.fallback) {
-        std::fprintf(stderr,
-                     "note: ranged download failed (%s); saved over a single connection\n",
-                     summary.fallback_reason.c_str());
-    }
-    std::printf("saved %" PRId64 " bytes to %s using %d connection(s)\n",
-                summary.bytes_written,
-                options.output_path.c_str(),
-                summary.connections);
-    return 0;
+    return download_with_cancel(options);
 }
 
 void print_optional(std::string_view label, const std::string& value) {
