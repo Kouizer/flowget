@@ -65,7 +65,7 @@ sonra devam ettirilebilir şekilde indirmek. UI yok.
 | S3 | `IStorage` + preallocate + `pwrite` (Win32/POSIX) | **TAMAMLANDI** |
 | S4 | `SegmentPlanner` + curl multi, 8 bağlantı, tek akışa düşüş | **TAMAMLANDI** |
 | S4b | S4b-lite: clang-tidy dosya listesi + gerçek bulgular + baseline (`--warnings-as-errors` S8'e ertelendi) | **TAMAMLANDI** |
-| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | **S5a-2a TAMAMLANDI** — S5a-2b (CLI, Ctrl+C) sırada |
+| S5 | Resume (`.flowget` sidecar, checkpoint, ETag değişimi) | **S5a-2a + S5a-2b TAMAMLANDI** — S5b sırada |
 | S6 | `RetryPolicy` + `RateLimiter` | |
 | S7 | `DynamicSplitter` + benchmark tablosu | |
 | S8 | `HashVerifier` + hata modeli + CLI bayrakları + RSS ölçümü | |
@@ -789,26 +789,26 @@ Windows Ctrl+C sonrası devam.
 
 **CLI**
 
-- [ ] `get --no-resume` (değersiz bayrak) → `options.resume=false`; yardım metni.
-- [ ] `on_resume` bağlanır: `Resuming from %.1f MiB` (bayt / 1 MiB) `stderr`'e, ilk progress'ten önce.
-- [ ] Ctrl+C: `run_get` artık `cancel` jetonu geçirir.
+- [x] `get --no-resume` (değersiz bayrak) → `options.resume=false`; yardım metni.
+- [x] `on_resume` bağlanır: `Resuming from %.1f MiB` (bayt / 1 MiB) `stderr`'e, ilk progress'ten önce.
+- [x] Ctrl+C: `run_get` artık `cancel` jetonu geçirir.
   - Windows: `SetConsoleCtrlHandler`; `CTRL_C_EVENT` + `CTRL_BREAK_EVENT`; ilk olayda yalnız
     `std::atomic<bool>::store(true)` (ayrı thread; dosya/log/kilit yok) ve `TRUE`; ikinci olayda
     `FALSE` → varsayılan davranış.
   - POSIX: `sigaction(SIGINT)`; handler yalnız `std::atomic<bool>` (lock-free, `static_assert`) ve
     `volatile sig_atomic_t` sayaç kullanır; ikinci sinyalde `SIG_DFL` + `raise(SIGINT)`. Dosya/log/kilit yok.
   - İptal → `aborted`, checkpoint yazılır, çıkış kodu **130**; handler indirme sonunda kaldırılır.
-- [ ] `summary.http.error == aborted` → 130; diğer hatalar 1; kullanım hatası 2 (mevcut).
+- [x] `summary.http.error == aborted` → 130; diğer hatalar 1; kullanım hatası 2 (mevcut).
 
 **Süreç testleri (`tests/integration/process_resume_test.cpp`, ayrı CTest girdisi)**
 
-- [ ] CLI yolu `FLOWGET_CLI_PATH` derleme tanımı / CTest env ile verilir; test hedefi `flowget-cli`'ye
+- [x] CLI yolu `FLOWGET_CLI_PATH` derleme tanımı / CTest env ile verilir; test hedefi `flowget-cli`'ye
       bağımlıdır.
-- [ ] **Öldürme testi (Windows `TerminateProcess`, POSIX `SIGKILL`):** yerel throttle'lı sunucu;
+- [x] **Öldürme testi (Windows `TerminateProcess`, POSIX `SIGKILL`):** yerel throttle'lı sunucu;
       çocuk süreç başlatılır; **sabit sleep yok** — sidecar her 50 ms yoklanır, `bytes_done()` belirli
       eşiğe (ör. toplamın %20'si) ulaşınca öldürülür (zaman aşımı 60 s). Sonra aynı komut yeniden
       çalıştırılır; `exit=0`, kaynak/hedef SHA-256 eşit, sidecar silinmiş.
-- [ ] **Windows Ctrl+C:** çocuk `CREATE_NEW_PROCESS_GROUP` ile başlatılır; sidecar eşiğe ulaşınca
+- [x] **Windows Ctrl+C:** çocuk `CREATE_NEW_PROCESS_GROUP` ile başlatılır; sidecar eşiğe ulaşınca
       `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid)` gönderilir; çıkış 130 beklenir; ardından
       resume ile SHA-256 eşit. **Gerekçe:** `CTRL_C_EVENT` belirli bir süreç grubuna gönderilemez
       (grup 0 tüm konsolu etkiler); `CTRL_BREAK_EVENT` gönderilebilir ve CLI iki olayı aynı handler'da
@@ -817,12 +817,12 @@ Windows Ctrl+C sonrası devam.
       alternatif kapsam: handler birim testi + `TerminateProcess` öldürme testi (OS teslimi hariç).
       **Atlama görünür olmalı:** `GTEST_SKIP() << "reason"` (logda `SKIPPED` satırı) ve rapor/kanıt
       tablosunda "Windows Ctrl+C otomatik kanıtsız, elle doğrulanacak" notu; sessiz skip yasak.
-- [ ] **POSIX Ctrl+C (opsiyonel ama ucuz):** `SIGINT` gönder → 130 → resume → SHA-256 eşit.
-- [ ] **`--no-resume` CLI:** geçerli sidecar + kısmi dosya varken `--no-resume` → sidecar silinmiş,
+- [x] **POSIX Ctrl+C (opsiyonel ama ucuz):** `SIGINT` gönder → 130 → resume → SHA-256 eşit.
+- [x] **`--no-resume` CLI:** geçerli sidecar + kısmi dosya varken `--no-resume` → sidecar silinmiş,
       taze indirme, hash doğru.
-- [ ] **`Resuming from ...` çıktısı:** kısmi indirme sonrası ikinci çalıştırmanın `stderr`'inde satır
+- [x] **`Resuming from ...` çıktısı:** kısmi indirme sonrası ikinci çalıştırmanın `stderr`'inde satır
       var; MiB değeri `resumed_from_bytes` ile tutarlı.
-- [ ] Kanıt: Windows `ctest` (process testleri dahil), `check_linux.ps1` (POSIX SIGINT/SIGKILL),
+- [x] Kanıt: Windows `ctest` (process testleri dahil), `check_linux.ps1` (POSIX SIGINT/SIGKILL),
       pre-commit, CLI e2e çıktısı, clang-tidy baseline.
 
 **Riskler (S5a-2)**
@@ -845,6 +845,47 @@ Windows Ctrl+C sonrası devam.
 - S5a-2b: `--no-resume`, resume satırı, Ctrl+C 130, gerçek öldürme + Windows Ctrl+C sonrası SHA-256
   eşitliği; process testleri yeşil; `check_linux.ps1` yeşil.
 - Her iki dilim ayrı commit; push kullanıcıda.
+
+**S5a-2b kanıtı (2026-11-22):** commit'ler `5956c89` (CLI bayrağı + resume satırı), `73afc9c`
+(Ctrl+C + 130), `6bcb0ac` (gerçek süreç testleri).
+
+- **Windows:** `cmake --build --preset windows-x64` + `ctest --preset windows-x64` → **3/3 passed**
+  (unit 0,18 s; integration 26,66 s; process 15,94 s). Süreç testleri:
+  `KillAndResumeMatchesTheSourceHash` (sidecar %20'de `TerminateProcess` → aynı komut → hash eşit),
+  `InterruptExitsWith130AndResumes` (`CTRL_BREAK_EVENT` → **130** → resume → hash eşit),
+  `NoResumeDeletesTheSidecarAndStartsOver` (geçerli sidecar + kısmi dosya → `--no-resume` → sidecar
+  silinmiş, taze indirme, hash doğru). Bu makinede konsol `CTRL_BREAK`'i teslim etti; konsol
+  reddederse test gerekçeli `GTEST_SKIP()` satırı basar (sessiz atlama yok) ve öldürme testi
+  resume'u kanıtlamaya devam eder — o durumda Windows Ctrl+C **otomatik kanıtsız, elle
+  doğrulanacak**.
+- **Linux:** `scripts/check_linux.ps1` → **PASSED (7,4 dk)**; `linux-x64`, `linux-x64-asan`,
+  `linux-x64-tsan` üçünde de **3/3 passed** (POSIX `SIGKILL` + `SIGINT` dahil); clang-tidy
+  **6 = baseline**. `pre_commit run --all-files` temiz.
+- **CLI e2e (gerçek süreç, WSL `linux-x64`):** 8 MiB dosya, 4 bağlantı, yerel throttle'lı sunucu;
+  2,4 s sonra `SIGINT`:
+
+```text
+=== first run: exit 130 ===
+--- first stderr (last 4 lines, CR shown as LF) ---
+4718592 / 8388608 bytes (56.2%)
+4980736 / 8388608 bytes (59.4%)
+flowget-cli: error: download cancelled
+note: the partial file and its resume sidecar were kept; rerun the same command to continue
+--- files after the interrupt ---
+-rw-r--r-- 1 kouizer kouizer 8388608 Nov 22 16:59 /tmp/flowget-e2e/out.bin
+-rw-r--r-- 1 kouizer kouizer     512 Nov 22 16:59 /tmp/flowget-e2e/out.bin.flowget
+=== second run: same command ===
+exit 0
+--- second stderr (CR shown as LF) ---
+Resuming from 4.8 MiB
+saved 8388608 bytes to /tmp/flowget-e2e/out.bin using 4 connection(s)
+--- SHA-256 ---
+0aeda0cb939c30ca58e1be264852f347372e17418ee3c84c465901b0faf58c8f  /tmp/flowget-e2e/source.bin
+0aeda0cb939c30ca58e1be264852f347372e17418ee3c84c465901b0faf58c8f  /tmp/flowget-e2e/out.bin
+--- sidecar after the resume (should be gone) ---
+ls: cannot access '/tmp/flowget-e2e/out.bin.flowget': No such file or directory
+```
+
 
 #### S5b — tek akış devamı + ölçümler
 
