@@ -42,6 +42,7 @@ void print_usage(std::FILE* out) {
                  "  -o, --output <file>   Destination path (UTF-8)\n"
                  "  --connections <n>     Concurrent connections, 1-64 (default: 8)\n"
                  "                        1 skips probing and downloads over a single stream\n"
+                 "  --no-resume           Ignore a .flowget sidecar and download from zero\n"
                  "  --user-agent <ua>     User-Agent header (default: FlowGet/0.1.0)\n"
                  "  --header \"Name: v\"    Extra request header; repeatable\n"
                  "\n"
@@ -49,7 +50,8 @@ void print_usage(std::FILE* out) {
                  "  --user-agent <ua>     User-Agent header (default: FlowGet/0.1.0)\n"
                  "  --header \"Name: v\"    Extra request header; repeatable\n"
                  "\n"
-                 "Resume and rate limits arrive later in M1.\n",
+                 "Resume is on by default: a valid sidecar continues the download.\n"
+                 "Rate limits arrive later in M1.\n",
                  static_cast<int>(kProgramName.size()),
                  kProgramName.data());
 }
@@ -142,6 +144,8 @@ int run_get(const std::vector<std::string>& args) {
                 print_error("--connections expects an integer between 1 and 64");
                 return 2;
             }
+        } else if (arg == "--no-resume") {
+            options.resume = false;
         } else if (arg == "--user-agent") {
             if (!next_value(options.user_agent)) {
                 return 2;
@@ -172,6 +176,16 @@ int run_get(const std::vector<std::string>& args) {
         return 2;
     }
     options.url = url;
+    // The engine reports the durable byte count once, before the first data request. A fresh
+    // download reports 0 and stays silent; a resumed one tells the user what it is keeping.
+    options.on_resume = [](std::int64_t bytes) {
+        if (bytes <= 0) {
+            return;
+        }
+        std::fprintf(
+            stderr, "Resuming from %.1f MiB\n", static_cast<double>(bytes) / (1024.0 * 1024.0));
+        std::fflush(stderr);
+    };
 
     flowget::HttpClient client;
     flowget::Downloader downloader{client};
