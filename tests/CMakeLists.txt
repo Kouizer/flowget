@@ -60,6 +60,27 @@ endif()
 
 flowget_set_warnings(flowget_integration_tests)
 
+# Real-process tests: the CLI runs as a child process, so the Windows Ctrl+C handler and a killed
+# transfer are exercised for real. FLOWGET_CLI_PATH is baked in at compile time because the test
+# binary and the CLI share a build tree, which keeps the CTest entry free of environment plumbing.
+if(FLOWGET_BUILD_CLI)
+    add_executable(flowget_process_tests
+                   integration/process_resume_test.cpp
+                   support/http_test_server.cpp)
+    target_include_directories(flowget_process_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+                                                             ${PROJECT_SOURCE_DIR}/core/src)
+    target_link_libraries(flowget_process_tests PRIVATE FlowGet::core GTest::gtest_main
+                                                          Threads::Threads)
+    target_compile_definitions(flowget_process_tests
+                               PRIVATE FLOWGET_CLI_PATH="$<TARGET_FILE:flowget-cli>")
+    add_dependencies(flowget_process_tests flowget-cli)
+    if(WIN32)
+        target_link_libraries(flowget_process_tests PRIVATE ws2_32)
+    endif()
+
+    flowget_set_warnings(flowget_process_tests)
+endif()
+
 # `gtest_discover_tests` runs the binary with `--gtest_output=json:<path>` after linking. GoogleTest
 # opens that path with the ANSI code page, so a checkout below a non-ASCII directory (e.g.
 # "Varsayılan Proje") fails the *build*. Register each suite as one CTest entry instead; GoogleTest
@@ -71,3 +92,11 @@ set_tests_properties(flowget_unit_tests PROPERTIES TIMEOUT 120)
 add_test(NAME flowget_integration_tests COMMAND flowget_integration_tests)
 set_tests_properties(flowget_integration_tests
                      PROPERTIES TIMEOUT 300 WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+
+# Separate entry: a failure here is a real-process/console problem, not an engine regression, and
+# the 300 s budget covers the state-based waits (60 s) plus both runs.
+if(FLOWGET_BUILD_CLI)
+    add_test(NAME flowget_process_tests COMMAND flowget_process_tests)
+    set_tests_properties(flowget_process_tests
+                         PROPERTIES TIMEOUT 300 WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+endif()
