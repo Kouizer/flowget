@@ -66,29 +66,38 @@ kesintiden sonra devam ettirilebilir indirmek; UI yok.
 
 ## S5b — tek akış devamı + ölçümler (sıradaki dilim)
 
-- [ ] `SingleStreamDownloader` resume: dosya boyutu > 0 ise `Range: bytes=N-` + `If-Range`; 206 → ekle,
-      200 → truncate + baştan.
+- [ ] `SingleStreamDownloader` resume: sidecar'daki **flush edilmiş `done`** değeri N ise
+      `Range: bytes=N-` + `If-Range`; 206 → ekle, 200 → truncate + baştan. **N dosya boyutu değildir:**
+      dosya alanı baştan `total_bytes` olarak ayrılır (preallocate), flush edilmemiş baytlar güvenilir
+      değildir; N yalnız checkpoint'in yayınladığı `done`'dan gelir.
+- [ ] Resume yalnız `Content-Length` biliniyorsa yapılır; bilinmiyorsa tek akışta boyut doğrulanamaz →
+      sıfırdan indir.
+- [ ] Sidecar (tek akış): tek segment `[0, total)` + `done`. **`done` < dosyadaki yazılmış bayt** iken
+      (flush edilmemiş kuyruk) resume testi: aynı komut `done`'dan devam eder, SHA-256 eşit.
 - [ ] Ölçüm 1 (kayıp): throttle'lı yerel sunucu, 20 MB/s, %40'ta öldür → yeniden çalıştır; yeniden
       indirilen veri **≈ checkpoint aralığı** (~2 s'lik veri), SHA-256 eşit. Tabloya işlenir.
-- [ ] Ölçüm 2 (performans): S5a-2a'da ölçülen 100 MB / 8 bağlantı / checkpoint açık sonucunu S5b
-      sonunda **tekrar doğrula** → S7 baseline'ı 3,66 s'nin en fazla **~%5** üstü (≤ ~3,84 s).
-      Aynı makine/sunucu, birkaç tekrar; sonuç tabloya.
+- [ ] Ölçüm 2 (performans, `--connections 1`): A = S5a-2b'nin son commit'indeki (`6bcb0ac`)
+      checkpoint'siz tek akışlı CLI, B = yeni CLI. Loopback ~200 MB, A,B sırayla **en az 20 çift**;
+      eşleşmiş oran (B/A) medyanı + bootstrap %95 GA; sonuç `measurements.md`'ye işlenir.
 - [ ] Doküman: resume varsayılan açık, `--no-resume` kaçış yolu; sidecar M2'de SQLite'a taşınır.
 
 **Riskler**
 
 - 2 s'lik checkpoint 20 MB/s'de ~40 MB kayıp demek; DoD tablosu buna göre güncellendi.
 - `preallocate` EOF'u `total_bytes` yapar; resume `open(read_write)` kullanır, asla `truncate` (S3 dersi).
+- Tek akışta resume başlangıcı dosya boyutundan alınırsa preallocate edilmiş sıfır baytlar atlanır/tekrar
+  yazılır → bozuk dosya; başlangıç yalnız sidecar `done`.
 - Kısmi dosya başka bir dosyaya aitse ve validator yoksa fark edilmez → validator yoksa resume yok.
 - Sidecar salt-okunur dizinde yazılamazsa uyarı + indirme devam (resume verisi kaybolur).
 - Zayıf ETag tek başına yetmez; sunucu `If-Range`'i yok sayıyorsa 200 → sıfırdan (sessiz ekleme yok).
 
-**DoD:** S5a-1/S5a-2/S5b testleri yeşil; Ctrl+C ve kill senaryolarında devam çalışıyor; 100 MB performans
-şartı (±%5) sağlanıyor; `check_linux.ps1` üç preset `exit 0`; clang-tidy baseline temiz.
+**DoD:** S5a-1/S5a-2/S5b testleri yeşil; Ctrl+C ve kill senaryolarında devam çalışıyor; tek akış A/B
+ölçümü tamamlanıp eşleşmiş oran + GA `measurements.md`'ye işlendi; `check_linux.ps1` üç preset `exit 0`;
+clang-tidy baseline temiz.
 
 ## Sıradaki adımlar
 
-1. **S5b** — yukarıdaki dört madde; ayrı commit + ölçüm kanıtı.
+1. **S5b** — yukarıdaki maddeler; ayrı commit + ölçüm kanıtı.
 2. **S6** — `RetryPolicy` (exponential backoff + jitter, `Retry-After`, 429/503'te bağlantı azaltma) ve
    `RateLimiter` (global token bucket); testler ve `--rate-limit` bayrağı.
 3. **S7** — `DynamicSplitter` (EWMA) + benchmark tablosu; aşağıdaki tabanla yeniden ölçüm.
@@ -121,6 +130,11 @@ S7'de aynı komutlarla, **birkaç tekrarla ve ölçüm sırasını değiştirere
 sıra ısınma/önbellek etkisini ayırmaz). Ayrıntı ve metrik tablosu:
 [measurements.md](measurements.md).
 
+## S7 — ertelenenler
+
+- [ ] S5a-2a checkpoint maliyetini **sessiz makinede** yeniden ölç (loopback GA üst ucu +%6,6; tek
+      batch'e bakma, eşleşmiş oran + bootstrap GA kullan).
+
 ## S8 — ertelenenler
 
 - [ ] Windows'a özel dosyalar (`storage_win32.cpp` vb.) Linux CI clang-tidy kapsamı dışında.
@@ -128,6 +142,8 @@ sıra ısınma/önbellek etkisini ayırmaz). Ayrıntı ve metrik tablosu:
       destekleyen güncel sürümleri her action'ın Releases sayfasından kontrol edip güncelle
       (Node 20 deprecation uyarısı, run #13).
 - [ ] `get --help` / alt komut yardımı yok (yalnız ana `--help` var).
+- [ ] `Last-Modified` 1 sn çözünürlük sınırı `--sha256` ile kapatılır.
+- [ ] Elle "done büyütülmüş" sidecar'ı yalnız `--sha256` yakalar (yapısal doğrulama geçer).
 
 ## M2–M7 özet
 
@@ -156,6 +172,10 @@ Tam metin: [roadmap-M2-M7.md](archive/roadmap-M2-M7.md).
 - **M7 — Paketleme, dokümantasyon, sürüm (≈1-2 hafta):** Inno Setup + taşınabilir zip, imza/SmartScreen,
   APK/AAB + F-Droid metadata, README/SSS, `docs/` İngilizce sürüm, lisans dosyaları, release workflow,
   temiz VM/cihaz kurulum testi. DoD: `v1.0.0` artifact'ları ve sıfırdan çalışan README komutları.
+
+## M2 — ertelenenler
+
+- [ ] Aynı `-o` dosyasına iki süreç yazarsa dosya bozulur: tek örnek (single instance) veya dosya kilidi.
 
 ## Ölçümler
 
