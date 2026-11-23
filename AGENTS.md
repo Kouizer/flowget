@@ -4,15 +4,19 @@ C++ çekirdekli, Flutter arayüzlü, Windows + Android hedefli download manager.
 Bu dosya her oturumun başında okunur. Kısa tutulur; ayrıntı `tasks/` ve `docs/` altındadır.
 
 ## Oturum başında
-1. `tasks/todo.md` oku: hangi milestone/dilimdeyiz, hangi madde açık.
-2. `tasks/lessons.md` oku: aynı hatayı tekrar etme.
-3. Göreve ilgili `docs/adr/*` dosyalarına bak. Kararlarla çelişen bir şey gerekiyorsa dur ve sor.
+1. `tasks/todo.md` **indeksini** oku: hangi milestone/dilimdeyiz, hangi madde açık.
+2. `tasks/lessons.md` **kural özetini** oku: aynı hatayı tekrar etme.
+3. Ayrıntı yalnız gerekiyorsa: `tasks/archive/` ve `tasks/lessons-archive.md` içinde `grep` ile ilgili
+   dilimi/derdi bul; bu dosyaları baştan sona okuma.
+4. Göreve ilgili `docs/adr/*` dosyalarına bak. Kararlarla çelişen bir şey gerekiyorsa dur ve sor.
 
 ## Plan ve onay
 - Kapsamlı iş (3+ adım veya mimari karar) için önce plan yaz: `tasks/todo.md`'ye işaretlenebilir maddelerle.
 - Planı göster, **onay bekle**, sonra kodla.
 - İşler ters giderse (beklenmedik hata, varsayım çöktü) körlemesine devam etme: dur, yeniden planla.
 - Basit ve net düzeltmelerde plan gerekmez.
+- **Dilim bitince:** plan + kanıtı `tasks/archive/<dilim>.md`'ye olduğu gibi taşı, `tasks/todo.md`'de
+  2-3 satırlık özet + arşiv bağlantısı bırak. Ölçüm tabloları `tasks/measurements.md`'ye gider.
 
 ## Bitti demeden önce kanıt
 - Build + `ctest` çalıştır, çıktıyı göster. Kanıtsız "tamam" deme.
@@ -33,7 +37,8 @@ Bu dosya her oturumun başında okunur. Kısa tutulur; ayrıntı `tasks/` ve `do
 - Geçici çözüm yok; kök nedeni bul.
 
 ## Hata ve ders
-- Bir hata düzeltince veya kullanıcı seni düzeltince `tasks/lessons.md`'ye ekle: belirti, **kök neden**, düzeltme, tekrarını önleyen kontrol.
+- Bir hata düzeltince tam kaydı `tasks/lessons-archive.md`'ye ekle: belirti, **kök neden**, düzeltme,
+  tekrarını önleyen kontrol. `tasks/lessons.md`'ye 1-2 satırlık kural + kontrol özeti yaz.
 - Hata bildirimi (log, CI çıktısı, başarısız test) geldiğinde el tutulmasını bekleme: logdan kök nedeni bul ve düzelt.
 
 ## Windows araçları
