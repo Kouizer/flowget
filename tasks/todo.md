@@ -886,6 +886,24 @@ saved 8388608 bytes to /tmp/flowget-e2e/out.bin using 4 connection(s)
 ls: cannot access '/tmp/flowget-e2e/out.bin.flowget': No such file or directory
 ```
 
+**Kanıt (Windows, ELLE DOĞRULAMA, 2026-11-22):** Gerçek PowerShell, gerçek ağ:
+`download.thinkbroadband.com/512MB.zip`, 536870912 bayt, `--connections 8`.
+
+- İndirme ortasında Ctrl+C → **%24,7** (132628480 bayt) noktasında durdu; çıkış kodu **130**;
+  `.bin` ve `.flowget` (896 bayt) diskte kaldı.
+- Aynı komut yeniden çalıştırıldı → `Resuming from 126.5 MiB` (kesilen noktayla aynı), çıkış **0**;
+  indirme bitince `.flowget` silindi.
+- SHA-256: `884A240A272FF12BADBCBB8A9657AFF1C9A9DC2B516C1FEC0B1DEEBA63F17526` — `curl.exe`
+  referans indirmesiyle aynı.
+- `--no-resume` ile: `Resuming` satırı **yok**, baştan indirdi, hash aynı.
+
+Bu, S5a-2b'nin "Windows Ctrl+C otomatik kanıtsız kalırsa elle doğrulanacak" notunu kapatır.
+
+**Kanıt (CI, 2026-11-22):** GitHub Actions **run #19** — Windows (MSVC), Linux (Clang,
+ASan/UBSan) ve `policy` job'larının üçü de yeşil. Windows Ctrl+C süreç testi CI konsolunda
+atlanırsa logda gerekçeli bir `SKIPPED` satırı görünür (sessiz atlama yok). Bu satır yerelde
+doğrulanamadı: `gh` CLI bu makinede kurulu değil; bu yüzden Windows Ctrl+C kanıtı yukarıdaki
+elle doğrulamaya dayanır.
 
 #### S5b — tek akış devamı + ölçümler
 
@@ -926,6 +944,7 @@ sıra ısınma/önbellek etkisini ayırmaz); sonuçlar `## Ölçüm ve kanıt ta
 - [ ] CI action sürümleri: `actions/checkout`, `actions/cache`, `ilammy/msvc-dev-cmd` için Node 24
       destekleyen güncel sürümleri her action'ın Releases sayfasından kontrol edip güncelle
       (Node 20 deprecation uyarısı, run #13).
+- [ ] `get --help` / alt komut yardımı yok (yalnız ana `--help` var).
 
 ### Tasarım
 - [ ] **S4'ün ilk maddesi:** `SingleStreamDownloader`'ı `IStorage`'a taşı, ASCII olmayan hedef yolla test
