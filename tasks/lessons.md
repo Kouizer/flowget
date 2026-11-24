@@ -36,8 +36,9 @@ kontrol** tutulur; başlık arşivdekiyle birebir aynıdır. Kural: kök neden y
 - **2026-11-14 — Transport 416'yı "HTTP hatası" saydığı için probe boş dosyada başarısız göründü:**
   probe `416`'yı anlamlı sonuç sayar; diğer 4xx hata kalır. Kontrol: `ReportsUnsatisfiableRange…` testi.
 - **2026-11-15 — `pre-commit` yerelde hiç çalışmadı: kullanıcı önbellek dizinlerinde ACL hatası:**
-  `PRE_COMMIT_HOME` + `VIRTUALENV_OVERRIDE_APP_DATA` ile temiz önbellek kullan. Kontrol: "manifest is
-  not a file" / `WinError 5` görünce depoda değil, bu iki değişkende ara.
+  `PRE_COMMIT_HOME` + `VIRTUALENV_OVERRIDE_APP_DATA` proje içindeki `build/` altına verilir (geçici
+  betikler de `build/`'de). Kontrol: "manifest is not a file" / `WinError 5` görünce depoda değil,
+  bu iki değişkende ara.
 - **2026-11-15 — CI kırıldı: vcpkg sığ klonunda `builtin-baseline` commit'i yok:** pinned baseline
   commit'i `git fetch --depth=1` ile çekilir; cache anahtarı baseline içerir. Kontrol: fetch script'i
   her iki job'da bootstrap'ten önce koşar, hata job'u kırmızı yapar.

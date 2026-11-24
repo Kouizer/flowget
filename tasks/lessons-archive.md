@@ -161,13 +161,14 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
   virtualenv\Cache` dizinleri yazılamaz durumda (bozuk ACL / antivirüs kilidi). pre-commit bunları
   varsayılan konumdan kullandığı için hook ortamı kurulamadı; hata mesajı manifest hatası gibi
   göründüğü için ilk bakışta yanıltıcı.
-- Düzeltme: kullanıcı dizinlerine dokunmadan, oturumluk geçici konumlar verildi:
-  `PRE_COMMIT_HOME=%TEMP%\opencode\pre-commit-home`,
-  `VIRTUALENV_OVERRIDE_APP_DATA=%TEMP%\opencode\virtualenv-app-data`. Bu iki değişkenle
-  `run --all-files` tüm hook'larda `Passed` verdi.
+- Düzeltme: kullanıcı dizinlerine dokunmadan, proje içindeki `build/` altında geçici konumlar verildi:
+  `PRE_COMMIT_HOME=C:\dev\flowget\build\pre-commit-home`,
+  `VIRTUALENV_OVERRIDE_APP_DATA=C:\dev\flowget\build\virtualenv-app-data`. Bu iki değişkenle
+  `run --all-files` tüm hook'larda `Passed` verdi. Geçici betikler de proje dışına değil `build/`
+  altına konur ve commit'lenmez.
 - Tekrarını önleyen kontrol: pre-commit yine "manifest is not a file" veya `WinError 5` derse, sorunu
-  depo/config içinde aramadan önce bu iki ortam değişkeniyle temiz bir önbellek kullan. CI etkilenmez
-  (temiz runner).
+  depo/config içinde aramadan önce bu iki ortam değişkeniyle `build/` altında temiz bir önbellek
+  kullan. CI etkilenmez (temiz runner).
 
 ### 2026-11-15 — CI kırıldı: vcpkg sığ klonunda `builtin-baseline` commit'i yok
 - Belirti: GitHub Actions run #5 (commit `51e7699`), Linux job'u `Configure (debug)` adımında 1 s'de

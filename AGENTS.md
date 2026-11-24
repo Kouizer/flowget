@@ -16,14 +16,17 @@ Bu dosya her oturumun başında okunur. Kısa tutulur; ayrıntı `tasks/` ve `do
 - İşler ters giderse (beklenmedik hata, varsayım çöktü) körlemesine devam etme: dur, yeniden planla.
 - Basit ve net düzeltmelerde plan gerekmez.
 - **Dilim bitince:** plan + kanıtı `tasks/archive/<dilim>.md`'ye olduğu gibi taşı, `tasks/todo.md`'de
-  2-3 satırlık özet + arşiv bağlantısı bırak. Ölçüm tabloları `tasks/measurements.md`'ye gider.
+  2-3 satırlık özet + bağlantı bırak. **Ertelenen her madde arşive gitmeden önce indeksteki ilgili
+  listeye (S7/S8/M2…) kopyalanır.** Ölçüm tabloları `tasks/measurements.md`'ye gider.
 
 ## Bitti demeden önce kanıt
 - Build + `ctest` çalıştır, çıktıyı göster. Kanıtsız "tamam" deme.
 - Maddeyi `todo.md`'de ancak kanıtıyla (test çıktısı, ölçüm) işaretle.
-- Linux derlemesi de yerelde doğrulanır: `scripts/check_linux.ps1` (WSL2 Ubuntu; debug + ASan/UBSan).
-  "Doğrulanamadı" yazmak yerine betiğin sonucunu raporla. Yalnızca betiği çalıştıramadığın bir
-  durum (WSL yok, klon yok) varsa bunu gerekçesiyle açıkça yaz; CI doğrulayacak.
+- Linux derlemesi de yerelde doğrulanır: `scripts/check_linux.ps1` (WSL2 Ubuntu) üç preseti koşar:
+  `linux-x64` (debug), `linux-x64-asan` (ASan/UBSan), `linux-x64-tsan` (TSan) + clang-tidy baseline
+  kapısı (**yeni kod yeni bulgu eklemez; sayı `scripts/clang_tidy_baseline.txt`'i aşmaz**; aşımda
+  "EXCEEDED" uyarısı verir, script durmaz). Betik çalıştırılamazsa (WSL yok, klon yok) gerekçesini yaz;
+  CI doğrulayacak.
 - Kendine sor: kıdemli bir mühendis bu değişikliği onaylar mıydı?
 
 ## Kod kuralları
@@ -32,6 +35,8 @@ Bu dosya her oturumun başında okunur. Kısa tutulur; ayrıntı `tasks/` ve `do
   `send/recv` dönüş ve uzunluk tipleri, `closesocket`/`close`, `NOMINMAX`, `MSG_NOSIGNAL`, işaretli/işaretsiz dönüşümler.
 - Proje yolu ve araç zincirinin ürettiği yollar **ASCII** olmalı (`C:\dev\flowget`).
 - `clang-format` temiz olmalı. Değişiklik küçük ve odaklı olsun; gereksiz yeniden yazma yok.
+- `NOLINT` yalnız aynı satırda gerekçeyle (`// NOLINT(...): neden`) yazılır; susturma amacıyla
+  kullanılmaz. `NOLINTNEXTLINE` hedef kodun hemen üstünde olur (araya satır girmez).
 - GPL/AGPL bağımlılık yasak (ADR-0004). DRM kırma kapsam dışı.
 - Zarafet dengesi: büyük değişiklikte "daha sade yol var mı?" diye dur; basit düzeltmede aşırı mühendislik yapma.
 - Geçici çözüm yok; kök nedeni bul.
@@ -47,17 +52,19 @@ Bu dosya her oturumun başında okunur. Kısa tutulur; ayrıntı `tasks/` ve `do
 - pre-commit: **`git add -A` yaptıktan SONRA** `py -m pre_commit run --all-files` çalıştır (CI aynı
   kontrolü yapar). Sıra önemli: pre-commit sahnelenmemiş değişiklikleri stash'leyip HEAD'i denetler;
   önce koşarsa kendi değişikliklerini görmeden "Passed" der (`tasks/lessons.md`, 2026-11-16).
-  `pre-commit.exe` PATH'te olmayabilir; modül olarak çalıştır.
-- Linux doğrulaması: **commit'ten önce** `.\scripts\check_linux.ps1` çalıştır. Betik `C:\dev\flowget`
-  içeriğini WSL2'deki `~/flowget` klonuna rsync'ler (`build/`, `.git/` hariç) ve `linux-x64` (debug)
-  ile `linux-x64-asan` (ASan/UBSan) presetlerinde configure + build + `ctest` koşar. Linux derlemesi
-  yerelde doğrulanır; "doğrulanamadı" demek yerine sonucu raporla.
-  Gereksinim: WSL2 Ubuntu, `~/vcpkg` klonu (`FLOWGET_VCPKG_ROOT`) ve `cmake/clang/ninja/rsync`.
+  `pre-commit.exe` PATH'te olmayabilir; modül olarak çalıştır. Önbellek hatasında (`WinError 5`,
+  "manifest is not a file") `PRE_COMMIT_HOME` ve `VIRTUALENV_OVERRIDE_APP_DATA` proje içindeki
+  `build/` altına verilir; kullanıcı önbelleğine dokunma.
+- Geçici betikler proje dışına (`AppData\Temp`) konmaz; `build/` altında tutulur ve commit'lenmez.
+- Linux doğrulaması: **commit'ten önce** `.\scripts\check_linux.ps1` (üç preset + tidy kapısı, yukarıda).
+  Betik `C:\dev\flowget` içeriğini WSL2'deki `~/flowget` klonuna rsync'ler (`build/`, `.git/` hariç).
+  Gereksinim: WSL2 Ubuntu, `~/vcpkg` klonu (`FLOWGET_VCPKG_ROOT`), `cmake/clang/ninja/rsync`.
 - vcpkg: `FLOWGET_VCPKG_ROOT=C:\Users\Enes\vcpkg` tanımlıdır. Visual Studio'nun gömülü vcpkg'ını kullanma.
 - Yeni terminal/OpenCode oturumu açmadan ortam değişkeni değişiklikleri görünmez.
 
 ## Git
-- Conventional commits (`feat(core): ...`, `fix(build): ...`, `docs: ...`). Küçük, mantıklı commit'ler.
+- Conventional commits (`feat(core): ...`, `fix(build): ...`, `docs: ...`). Küçük, mantıklı commit'ler;
+  kota/bağlam ortada bitebilir → her mantıklı adımda commit + `tasks/todo.md` kutucukları, yarım iş yok.
 - **Commit'le ama `git push` yapma.** Push'u kullanıcı yapar.
 - **Push'lanmış commit'i asla amend etme / force push yapma.** Düzeltme gerekiyorsa **yeni commit** at.
   (2026-11-16: push sonrası amend, `origin/main` ile ayrık geçmiş üretti; gereksiz merge commit'i
