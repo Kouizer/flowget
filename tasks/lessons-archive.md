@@ -450,3 +450,21 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
   eşleşmiş medyan 0,988, GA [0,926; 1,066]).
 - Tekrarını önleyen kontrol: benchmark betiği `exit` kodunu ve yazılan baytı kaydeder; sıfır olmayan
   çıkış satırı istatistiğe girmez. Tek batch'lik medyan farkına bakıp "regresyon var" denmez.
+
+### 2026-11-25 — Checkpoint testi geçici "tam" checkpoint'i yarış olarak görüyordu
+- Belirti: Linux ASan ctest'te `ResumeDownload.PublishesPeriodicCheckpointsDuringALongTransfer`
+  aralıklı düşüyordu: `highest_seen.load() == payload.size()` (4194304 vs 4194304); bir koşuda da
+  `highest_seen == 0`.
+- Kök neden: Motor son segment bitince `attempt_checkpoint()` ile `done == total` olan bir sidecar
+  yayınlıyor, ardından son flush + close + sidecar silme yapıyor. Test `done`'ın monoton maksimumunu
+  tuttuğu için yoklayıcı bu kısa pencereye denk gelirse "en yüksek değer < toplam" iddiası düşüyor.
+  **S5b ile ilgisi yok:** S5b öncesi HEAD (`f749d83`), aynı test ASan'da 300 koşuda 3 kez düştü;
+  bunlardan ikisi tam olarak `4194304 vs 4194304`, biri yoklayıcının hiç checkpoint göremediği 0
+  durumu. Yani test kendi başına yarışa açık.
+- Düzeltme: Test artık maksimum değeri değil, **tamamlanmamış** bir checkpoint gördüğünü
+  (`0 < done < total`) doğruluyor; geçici tam checkpoint'in görülüp görülmemesi sonucu değiştirmiyor.
+  Aynı düzeltme tek akış checkpoint testine de uygulandı.
+- Tekrarını önleyen kontrol: Düzeltmeden sonra Linux ASan'da `--gtest_repeat=50` ile Resume ve
+  SingleStream testleri 50/50 yeşil; aynı test HEAD'de 300 tekrarda 3 hata veriyor. Kural:
+  "şu anki maksimum" gibi zamanlamaya bağlı bir gözlemi değil, motorun garanti ettiği değişmezi
+  (tamamlanmamış checkpoint) iddia et.

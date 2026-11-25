@@ -81,3 +81,7 @@ kontrol** tutulur; başlık arşivdekiyle birebir aynıdır. Kural: kök neden y
   WAN'da çiftler arası ~10 s bekle, `exit≠0` koşuyu tabloya alma; loopback'te ≥20 çift, eşleşmiş oran
   medyanı + bootstrap %95 GA raporla. Kontrol: benchmark betiği `exit` kodunu ve yazılan baytı kaydeder;
   tek batch medyanıyla "regresyon var" denmez.
+- **2026-11-25 — Checkpoint testi geçici "tam" checkpoint'i yarış olarak görüyordu:** Monotonic
+  maksimum `done` yerine tamamlanmamış checkpoint (`0 < done < total`) görüldüğünü iddia et; tam
+  checkpoint'in görülmesi zamanlamaya bağlı. Kontrol: düzeltilmiş test ASan'da 50 tekrar yeşil;
+  S5b öncesi HEAD'de aynı test 300 tekrarda 3 kez düştü.

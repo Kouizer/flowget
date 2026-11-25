@@ -320,18 +320,21 @@ TEST(ResumeDownload, PublishesPeriodicCheckpointsDuringALongTransfer) {
     options.connections = 2;
 
     std::atomic<bool> stop{false};
-    std::atomic<std::int64_t> highest_seen{0};
-    std::jthread poller{[&options, &stop, &highest_seen] {
+    std::atomic<bool> saw_incomplete{false};
+    std::jthread poller{[&options, &payload, &stop, &saw_incomplete] {
         while (!stop.load(std::memory_order_relaxed)) {
             const std::string sidecar = flowget::resume_sidecar_path(options.output_path);
             if (file_exists(sidecar)) {
                 const ResumeParseResult parsed =
                     parse_resume_state(read_sidecar(options.output_path));
                 if (parsed.ok()) {
+                    // The engine also publishes a full-size checkpoint when the last segment
+                    // finishes and removes it after the final flush; whether the poller observes
+                    // that transient window is a race. Only an incomplete checkpoint proves the
+                    // timer fired mid-transfer.
                     const std::int64_t done = parsed.state.bytes_done();
-                    std::int64_t seen = highest_seen.load(std::memory_order_relaxed);
-                    while (done > seen && !highest_seen.compare_exchange_weak(
-                                              seen, done, std::memory_order_relaxed)) {
+                    if (done > 0 && done < static_cast<std::int64_t>(payload.size())) {
+                        saw_incomplete.store(true, std::memory_order_relaxed);
                     }
                 }
             }
@@ -349,8 +352,7 @@ TEST(ResumeDownload, PublishesPeriodicCheckpointsDuringALongTransfer) {
     EXPECT_EQ(read_file(options.output_path), payload);
     EXPECT_FALSE(file_exists(flowget::resume_sidecar_path(options.output_path)));
     // A checkpoint visible while the file was still incomplete can only come from the timer.
-    EXPECT_GT(highest_seen.load(), 0);
-    EXPECT_LT(highest_seen.load(), static_cast<std::int64_t>(payload.size()));
+    EXPECT_TRUE(saw_incomplete.load());
 }
 
 TEST(ResumeDownload, RedirectTargetMayChangeWhileTheOriginalUrlResumes) {
