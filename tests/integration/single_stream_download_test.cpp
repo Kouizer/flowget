@@ -551,9 +551,9 @@ TEST(SingleStreamDownload, ResumesFromTheCheckpointedPrefix) {
 
     preallocate_file(options.output_path, static_cast<std::int64_t>(payload.size()));
     write_prefix(options.output_path, std::string_view{payload}.substr(0, written_tail));
-    write_sidecar(options.output_path,
-                  single_stream_state(options.url, static_cast<std::int64_t>(payload.size()),
-                                      durable));
+    write_sidecar(
+        options.output_path,
+        single_stream_state(options.url, static_cast<std::int64_t>(payload.size()), durable));
 
     std::vector<std::int64_t> notices;
     options.on_resume = [&notices](std::int64_t bytes) { notices.push_back(bytes); };
@@ -604,9 +604,9 @@ TEST(SingleStreamDownload, RestartsFromZeroWhenTheServerIgnoresTheRange) {
 
     preallocate_file(options.output_path, static_cast<std::int64_t>(payload.size()));
     write_prefix(options.output_path, std::string_view{payload}.substr(0, 300 * 1024));
-    write_sidecar(options.output_path,
-                  single_stream_state(options.url, static_cast<std::int64_t>(payload.size()),
-                                      durable));
+    write_sidecar(
+        options.output_path,
+        single_stream_state(options.url, static_cast<std::int64_t>(payload.size()), durable));
 
     std::vector<std::int64_t> notices;
     options.on_resume = [&notices](std::int64_t bytes) { notices.push_back(bytes); };
@@ -650,7 +650,8 @@ TEST(SingleStreamDownload, AlreadyCompleteSidecarSkipsTheRequest) {
     preallocate_file(options.output_path, static_cast<std::int64_t>(payload.size()));
     write_prefix(options.output_path, payload);
     write_sidecar(options.output_path,
-                  single_stream_state(options.url, static_cast<std::int64_t>(payload.size()),
+                  single_stream_state(options.url,
+                                      static_cast<std::int64_t>(payload.size()),
                                       static_cast<std::int64_t>(payload.size())));
 
     const flowget::DownloadSummary summary = downloader.download(options);
@@ -688,9 +689,9 @@ TEST(SingleStreamDownload, IgnoresTheSidecarWhenTheFileSizeDoesNotMatch) {
     // A sidecar whose preallocated file is missing: its `done` cannot be trusted.
     preallocate_file(options.output_path, 256 * 1024);
     write_prefix(options.output_path, std::string_view{payload}.substr(0, 256 * 1024));
-    write_sidecar(options.output_path,
-                  single_stream_state(options.url, static_cast<std::int64_t>(payload.size()),
-                                      128 * 1024));
+    write_sidecar(
+        options.output_path,
+        single_stream_state(options.url, static_cast<std::int64_t>(payload.size()), 128 * 1024));
 
     const flowget::DownloadSummary summary = downloader.download(options);
 
@@ -731,9 +732,9 @@ TEST(SingleStreamDownload, RestartsWhenA206ContradictsTheSidecar) {
 
     preallocate_file(options.output_path, static_cast<std::int64_t>(payload.size()));
     write_prefix(options.output_path, std::string_view{payload}.substr(0, 300 * 1024));
-    write_sidecar(options.output_path,
-                  single_stream_state(options.url, static_cast<std::int64_t>(payload.size()),
-                                      durable));
+    write_sidecar(
+        options.output_path,
+        single_stream_state(options.url, static_cast<std::int64_t>(payload.size()), durable));
 
     std::vector<std::int64_t> notices;
     options.on_resume = [&notices](std::int64_t bytes) { notices.push_back(bytes); };
