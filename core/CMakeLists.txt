@@ -17,6 +17,7 @@ add_library(
     src/downloader.cpp
     src/resume_state.cpp
     src/resume_checkpoint.cpp
+    src/resume_sidecar.cpp
     src/file_replace.cpp
     src/storage.cpp)
 

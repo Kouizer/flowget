@@ -35,23 +35,6 @@ enum class HttpMethod {
     head,
 };
 
-struct HttpRequest {
-    std::string url;
-    HttpMethod method = HttpMethod::get;
-    std::string user_agent = "FlowGet/0.1.0";
-    // Extra request headers, e.g. "referer", "cookie", "authorization".
-    std::map<std::string, std::string> headers;
-    bool follow_redirects = true;
-    // Hard limit for the whole transfer, redirects included. 0 keeps the transport defaults
-    // (connect timeout + low-speed abort). Used by probing, where a stalled server must not block.
-    std::int64_t timeout_ms = 0;
-    // Optional byte range: `range_length` bytes starting at `range_start`. Both -1 means "no Range
-    // header". The segmented engine sets one range per connection; a ranged request is pinned to
-    // HTTP/1.1 on a fresh connection.
-    std::int64_t range_start = -1;
-    std::int64_t range_length = -1;
-};
-
 struct HttpResponse {
     long status = 0;
     // -1 when the server did not announce a length (chunked or connection-close framing).
@@ -65,6 +48,28 @@ struct HttpResponse {
     std::string content_range;
     std::string content_type;
     std::string content_disposition;
+};
+
+struct HttpRequest {
+    std::string url;
+    HttpMethod method = HttpMethod::get;
+    std::string user_agent = "FlowGet/0.1.0";
+    // Extra request headers, e.g. "referer", "cookie", "authorization".
+    std::map<std::string, std::string> headers;
+    bool follow_redirects = true;
+    // Hard limit for the whole transfer, redirects included. 0 keeps the transport defaults
+    // (connect timeout + low-speed abort). Used by probing, where a stalled server must not block.
+    std::int64_t timeout_ms = 0;
+    // Optional byte range: `range_length` bytes starting at `range_start`. Both -1 means "no Range
+    // header". `range_length == -1` with a non-negative `range_start` asks for the open-ended
+    // suffix `bytes=start-`, which is what a single-stream resume sends. A ranged request is pinned
+    // to HTTP/1.1 on a fresh connection. The segmented engine sets one closed range per connection.
+    std::int64_t range_start = -1;
+    std::int64_t range_length = -1;
+    // Called once, when the final (non-redirect, non-1xx) response headers are complete and before
+    // the first body byte. Fields that only libcurl knows after the transfer (`effective_url`)
+    // are empty here. The callback must not throw; the body sink decides what to do with the bytes.
+    std::function<void(const HttpResponse&)> on_response;
 };
 
 // Body callback: returns false to abort the transfer. Bytes are delivered in arrival order and are

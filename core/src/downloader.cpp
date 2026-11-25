@@ -7,6 +7,7 @@
 
 #include "download_util.h"
 #include "file_replace.h"
+#include "resume_sidecar.h"
 #include "segmented_download.h"
 
 #include <algorithm>
@@ -22,7 +23,10 @@
 namespace flowget {
 namespace {
 
+using detail::file_size_or_unknown;
+using detail::forget_sidecar;
 using detail::SegmentTask;
+using detail::validators_match;
 
 DownloadSummary failure(HttpError error, std::string message, int connections) {
     DownloadSummary summary;
@@ -69,58 +73,6 @@ DownloadSummary create_empty_file(const DownloadOptions& options, const ProbeRes
     return summary;
 }
 
-// -1 means "missing or unreadable", which the resume decision treats the same way: start fresh.
-std::int64_t file_size_or_unknown(const std::string& utf8_path) {
-    std::error_code error;
-    const auto size = std::filesystem::file_size(detail::path_from_utf8(utf8_path), error);
-    if (error) {
-        return -1;
-    }
-    return static_cast<std::int64_t>(size);
-}
-
-bool file_exists(const std::string& utf8_path) {
-    std::error_code error;
-    const bool present = std::filesystem::exists(detail::path_from_utf8(utf8_path), error);
-    return !error && present;
-}
-
-// Best effort: a sidecar that cannot be deleted now is caught by the next run's "already complete"
-// or size check. A missing sidecar is success.
-void forget_sidecar(const std::string& sidecar_path) {
-    std::string ignored;
-    static_cast<void>(detail::remove_file(sidecar_path, ignored));
-}
-
-struct LoadedSidecar {
-    bool exists = false;
-    ResumeState state;
-    // Non-empty: the file exists but must not be trusted. The caller deletes it and starts fresh.
-    std::string discard_reason;
-};
-
-LoadedSidecar load_sidecar(const std::string& sidecar_path) {
-    LoadedSidecar loaded;
-    if (!file_exists(sidecar_path)) {
-        return loaded;
-    }
-    loaded.exists = true;
-
-    std::string contents;
-    std::string read_error;
-    if (!detail::read_file_utf8(sidecar_path, kMaxResumeStateBytes, contents, read_error)) {
-        loaded.discard_reason = std::move(read_error);
-        return loaded;
-    }
-    ResumeParseResult parsed = parse_resume_state(contents);
-    if (!parsed.ok()) {
-        loaded.discard_reason = std::move(parsed.error);
-        return loaded;
-    }
-    loaded.state = std::move(parsed.state);
-    return loaded;
-}
-
 struct ResumePlan {
     ResumeState state;
     bool candidate = false;
@@ -133,10 +85,10 @@ ResumePlan load_resume_plan(const DownloadOptions& options, const std::string& s
     if (!options.resume) {
         return plan;
     }
-    LoadedSidecar loaded = load_sidecar(sidecar_path);
+    detail::LoadedSidecar loaded = detail::load_sidecar(sidecar_path);
     if (!loaded.discard_reason.empty()) {
         plan.note = "ignored the resume sidecar: " + loaded.discard_reason;
-        forget_sidecar(sidecar_path);
+        detail::forget_sidecar(sidecar_path);
         return plan;
     }
     if (loaded.exists) {
@@ -152,15 +104,6 @@ bool all_segments_done(const ResumeState& state) {
     });
 }
 
-// The engine sends If-Range with a strong ETag when the server has one, otherwise Last-Modified
-// (tasks/todo.md S5 decision 5). The sidecar must prove the same representation the new probe sees.
-bool validators_match(const ResumeState& state, const ProbeResult& probe) {
-    if (is_strong_etag(probe.etag)) {
-        return state.etag == probe.etag;
-    }
-    return !probe.last_modified.empty() && state.last_modified == probe.last_modified;
-}
-
 // Empty when the sidecar may be resumed from; otherwise the user-facing reason to start fresh.
 std::string resume_mismatch(const ResumeState& state,
                             const ProbeResult& probe,
@@ -173,7 +116,7 @@ std::string resume_mismatch(const ResumeState& state,
     if (state.total_bytes != probe.content_length) {
         return "the size changed";
     }
-    if (!validators_match(state, probe)) {
+    if (!validators_match(state, probe.etag, probe.last_modified)) {
         return "the server's validator changed";
     }
     if (state.segments.size() > static_cast<std::size_t>(kMaxConnections)) {
@@ -370,9 +313,9 @@ DownloadSummary Downloader::download(const DownloadOptions& options,
     }
 
     if (connections == 1) {
-        // Single-stream resume lands in S5b. This path truncates the output, so any sidecar is
-        // stale; deleting it best effort is enough because the file itself is rewritten.
-        forget_sidecar(sidecar_path);
+        // No probe: the single-stream path reads its own sidecar and turns a validated `done` into
+        // `Range: bytes=done-` plus If-Range (S5b). The strict `--no-resume` cleanup above already
+        // removed a stale sidecar.
         return SingleStreamDownloader(client_).download(options, on_progress, cancel);
     }
 

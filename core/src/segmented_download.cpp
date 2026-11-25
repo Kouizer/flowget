@@ -7,6 +7,7 @@
 #include "curl_common.h"
 #include "download_util.h"
 #include "resume_checkpoint.h"
+#include "resume_sidecar.h"
 
 #include <algorithm>
 #include <array>
@@ -241,16 +242,6 @@ std::string storage_failure(const std::string& action, const StorageResult& resu
            (result.message.empty() ? storage_error_name(result.error) : result.message);
 }
 
-// RFC 9110 §13.1.5: If-Range needs a strong validator. A weak ETag proves semantic equivalence,
-// not byte identity, so a weak ETag falls back to Last-Modified; without either the engine must
-// not resume (and does not checkpoint, because a later run could not verify the file).
-std::string select_if_range(const ProbeResult& probe) {
-    if (is_strong_etag(probe.etag)) {
-        return probe.etag;
-    }
-    return probe.last_modified;
-}
-
 ResumeState build_checkpoint_state(const DownloadOptions& options,
                                    const ProbeResult& probe,
                                    std::int64_t total,
@@ -354,7 +345,7 @@ SegmentedOutcome run_segmented(const DownloadOptions& options,
     // If-Range makes a server that changed the representation answer 200 instead of a stale 206;
     // the status check below then turns that into a resume invalidation or a fallback instead of a
     // mixed-version file.
-    const std::string if_range = select_if_range(probe);
+    const std::string if_range = select_if_range(probe.etag, probe.last_modified);
     std::map<std::string, std::string> request_headers = options.headers;
     if (!if_range.empty()) {
         request_headers["If-Range"] = if_range;

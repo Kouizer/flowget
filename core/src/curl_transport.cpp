@@ -3,12 +3,15 @@
 #include "curl_common.h"
 
 #include <array>
+#include <charconv>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 #include <curl/curl.h>
 
@@ -18,9 +21,66 @@ namespace {
 struct RequestContext {
     const BodySink* sink = nullptr;
     const std::atomic<bool>* cancel = nullptr;
+    const std::function<void(const HttpResponse&)>* on_response = nullptr;
     std::map<std::string, std::string> headers;
     std::int64_t bytes_received = 0;
+    long status = 0;
+    bool response_announced = false;
 };
+
+long parse_status_line(std::string_view line) {
+    const std::size_t space = line.find(' ');
+    if (space == std::string_view::npos) {
+        return 0;
+    }
+    const std::string_view code = line.substr(space + 1, 3);
+    if (code.size() != 3) {
+        return 0;
+    }
+    long value = 0;
+    for (const char character : code) {
+        if (character < '0' || character > '9') {
+            return 0;
+        }
+        value = (value * 10) + (character - '0');
+    }
+    return value;
+}
+
+std::int64_t parse_content_length(const std::map<std::string, std::string>& headers) {
+    const auto iterator = headers.find("content-length");
+    if (iterator == headers.end()) {
+        return -1;
+    }
+    std::int64_t value = -1;
+    const std::string& text = iterator->second;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) {
+        return -1;
+    }
+    return value;
+}
+
+// Fills the header-only view of a response. The effective URL and the final Content-Length are only
+// known after the transfer, so the callback sees what the headers already prove.
+HttpResponse response_from_headers(const RequestContext& context) {
+    HttpResponse response;
+    response.status = context.status;
+    response.content_length = parse_content_length(context.headers);
+    response.etag = detail::header_value(context.headers, "etag");
+    response.last_modified = detail::header_value(context.headers, "last-modified");
+    response.accept_ranges = detail::header_value(context.headers, "accept-ranges");
+    response.content_range = detail::header_value(context.headers, "content-range");
+    response.content_type = detail::header_value(context.headers, "content-type");
+    response.content_disposition = detail::header_value(context.headers, "content-disposition");
+    return response;
+}
+
+// Redirects and informational responses are not the resource; only the response that carries the
+// body may reach on_response.
+bool is_final_response(long status) {
+    return status >= 200 && (status < 300 || status >= 400);
+}
 
 std::size_t on_header(char* buffer, std::size_t size, std::size_t count, void* userdata) {
     auto* context = static_cast<RequestContext*>(userdata);
@@ -31,6 +91,17 @@ std::size_t on_header(char* buffer, std::size_t size, std::size_t count, void* u
     // response's headers, because those describe the body we are writing.
     if (line.starts_with("HTTP/")) {
         context->headers.clear();
+        context->status = parse_status_line(line);
+        context->response_announced = false;
+        return total;
+    }
+
+    if (line == "\r\n") {
+        if (!context->response_announced && context->on_response != nullptr &&
+            is_final_response(context->status)) {
+            context->response_announced = true;
+            (*context->on_response)(response_from_headers(*context));
+        }
         return total;
     }
 
@@ -87,6 +158,7 @@ public:
         RequestContext context;
         context.sink = &sink;
         context.cancel = cancel;
+        context.on_response = request.on_response ? &request.on_response : nullptr;
 
         const detail::MultiHandle multi{curl_multi_init()};
         const detail::EasyHandle easy{curl_easy_init()};

@@ -1,16 +1,21 @@
 #include <flowget/download.h>
 #include <flowget/http_client.h>
+#include <flowget/resume_state.h>
 #include <flowget/single_stream_download.h>
 #include <flowget/storage.h>
 
+#include "file_replace.h"
 #include "support/http_test_server.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <string>
+#include <thread>
 
 #include <gtest/gtest.h>
 
@@ -18,7 +23,12 @@ namespace {
 
 using flowget::HttpClient;
 using flowget::HttpError;
+using flowget::IStorage;
+using flowget::OpenMode;
 using flowget::SingleStreamDownloader;
+using flowget::SingleStreamSettings;
+using flowget::StorageError;
+using flowget::StorageResult;
 using flowget::test::HttpTestServer;
 
 // Deterministic payload: one MiB of xorshift output, identical on every run, so a mismatch points
@@ -63,6 +73,67 @@ std::string read_file(const std::string& utf8_path) {
 bool file_exists(const std::string& utf8_path) {
     return std::filesystem::exists(from_utf8(utf8_path));
 }
+
+std::string read_sidecar(const std::string& output_path) {
+    std::string contents;
+    std::string error;
+    EXPECT_TRUE(flowget::detail::read_file_utf8(
+        flowget::resume_sidecar_path(output_path), flowget::kMaxResumeStateBytes, contents, error))
+        << error;
+    return contents;
+}
+
+// Delegates everything to the real storage but fails every flush, which is how a disk that stops
+// accepting data looks to the engine.
+class FlushFailingStorage final : public IStorage {
+public:
+    explicit FlushFailingStorage(std::unique_ptr<IStorage> inner) : inner_(std::move(inner)) {}
+
+    StorageResult open(const std::string& utf8_path, OpenMode mode) override {
+        return inner_->open(utf8_path, mode);
+    }
+
+    StorageResult reopen() override {
+        return inner_->reopen();
+    }
+
+    StorageResult close() override {
+        return inner_->close();
+    }
+
+    [[nodiscard]] bool is_open() const noexcept override {
+        return inner_->is_open();
+    }
+
+    StorageResult preallocate(flowget::FileOffset size) override {
+        return inner_->preallocate(size);
+    }
+
+    StorageResult write_at(flowget::FileOffset offset,
+                           const std::byte* data,
+                           std::size_t size,
+                           std::size_t& written) override {
+        return inner_->write_at(offset, data, size, written);
+    }
+
+    StorageResult read_at(flowget::FileOffset offset,
+                          std::byte* data,
+                          std::size_t size,
+                          std::size_t& read) override {
+        return inner_->read_at(offset, data, size, read);
+    }
+
+    StorageResult flush() override {
+        return StorageResult{StorageError::flush, 1, "injected flush failure"};
+    }
+
+    StorageResult size(flowget::FileOffset& out) override {
+        return inner_->size(out);
+    }
+
+private:
+    std::unique_ptr<IStorage> inner_;
+};
 
 TEST(SingleStreamDownload, WritesBodyVerbatim) {
     const std::string payload = make_payload(1024 * 1024);
@@ -140,6 +211,9 @@ TEST(SingleStreamDownload, HandlesChunkedTransferWithoutContentLength) {
     ASSERT_TRUE(summary.ok()) << summary.message;
     EXPECT_EQ(summary.http.response.content_length, -1);
     EXPECT_EQ(read_file(options.output_path), payload);
+    // S5b: without Content-Length the single-stream size cannot be verified, so no sidecar is
+    // written for a later run to trust.
+    EXPECT_FALSE(file_exists(flowget::resume_sidecar_path(options.output_path)));
 }
 
 TEST(SingleStreamDownload, FollowsRedirects) {
@@ -202,6 +276,8 @@ TEST(SingleStreamDownload, CancelsThrottledTransferAndRemovesPartialFile) {
     EXPECT_EQ(summary.http.error, HttpError::aborted);
     EXPECT_LT(summary.bytes_written, static_cast<std::int64_t>(payload.size()));
     EXPECT_FALSE(file_exists(options.output_path));
+    // The server sends no validator, so there is nothing a later run could verify: no sidecar.
+    EXPECT_FALSE(file_exists(flowget::resume_sidecar_path(options.output_path)));
 }
 
 TEST(SingleStreamDownload, WritesToNonAsciiPath) {
@@ -248,6 +324,150 @@ TEST(SingleStreamDownload, WritesToNonAsciiPath) {
     EXPECT_EQ(read, payload.size());
     EXPECT_EQ(read_back, payload);
     EXPECT_TRUE(std::filesystem::exists(file));
+}
+
+TEST(SingleStreamDownload, PublishesPeriodicCheckpointsAndRemovesTheSidecarOnSuccess) {
+    const std::string payload = make_payload(1024 * 1024);
+    HttpTestServer server([&payload](const flowget::test::Request&) {
+        flowget::test::Response response;
+        response.status = 200;
+        response.body = payload;
+        response.headers["ETag"] = "\"checkpoint-v1\"";
+        response.throttle_bytes_per_second = 256 * 1024;
+        return response;
+    });
+
+    HttpClient client;
+    SingleStreamDownloader downloader{client};
+
+    flowget::DownloadOptions options;
+    options.url = server.url("/checkpoint.bin");
+    options.output_path = to_utf8(make_temp_dir() / "checkpoint.bin");
+
+    std::atomic<bool> stop{false};
+    std::atomic<bool> saw_incomplete{false};
+    std::jthread poller{[&options, &payload, &stop, &saw_incomplete] {
+        while (!stop.load(std::memory_order_relaxed)) {
+            std::string contents;
+            std::string error;
+            if (flowget::detail::read_file_utf8(flowget::resume_sidecar_path(options.output_path),
+                                                flowget::kMaxResumeStateBytes,
+                                                contents,
+                                                error)) {
+                const flowget::ResumeParseResult parsed = flowget::parse_resume_state(contents);
+                if (parsed.ok()) {
+                    // The last timer checkpoint can land exactly on the final byte, and the
+                    // sidecar disappears right after the final flush; observing that transient
+                    // window is a race. An incomplete checkpoint proves the timer fired.
+                    const std::int64_t done = parsed.state.bytes_done();
+                    if (done > 0 && done < static_cast<std::int64_t>(payload.size())) {
+                        saw_incomplete.store(true, std::memory_order_relaxed);
+                    }
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        }
+    }};
+
+    SingleStreamSettings settings;
+    settings.checkpoint_interval = std::chrono::milliseconds{100};
+    const flowget::DownloadSummary summary = downloader.download(options, {}, nullptr, settings);
+    stop.store(true);
+    poller.join();
+
+    ASSERT_TRUE(summary.ok()) << summary.message;
+    EXPECT_EQ(read_file(options.output_path), payload);
+    EXPECT_FALSE(file_exists(flowget::resume_sidecar_path(options.output_path)));
+    // A checkpoint visible while the file was still incomplete can only come from the timer.
+    EXPECT_TRUE(saw_incomplete.load());
+}
+
+TEST(SingleStreamDownload, CancelKeepsTheDurablePrefixAndSidecar) {
+    const std::string payload = make_payload(1024 * 1024);
+    HttpTestServer server([&payload](const flowget::test::Request&) {
+        flowget::test::Response response;
+        response.status = 200;
+        response.body = payload;
+        response.headers["ETag"] = "\"checkpoint-v1\"";
+        response.throttle_bytes_per_second = 256 * 1024;
+        return response;
+    });
+
+    HttpClient client;
+    SingleStreamDownloader downloader{client};
+
+    flowget::DownloadOptions options;
+    options.url = server.url("/cancel-checkpoint.bin");
+    options.output_path = to_utf8(make_temp_dir() / "cancel-checkpoint.bin");
+
+    std::atomic<bool> cancel{false};
+    SingleStreamSettings settings;
+    settings.checkpoint_interval = std::chrono::milliseconds{50};
+    const flowget::DownloadSummary summary = downloader.download(
+        options,
+        [&cancel](const flowget::DownloadProgress& progress) {
+            if (progress.bytes_written > 256 * 1024) {
+                cancel.store(true);
+            }
+        },
+        &cancel,
+        settings);
+
+    EXPECT_FALSE(summary.ok());
+    EXPECT_EQ(summary.http.error, HttpError::aborted);
+    ASSERT_TRUE(file_exists(options.output_path));
+    ASSERT_TRUE(file_exists(flowget::resume_sidecar_path(options.output_path)));
+
+    const flowget::ResumeParseResult parsed =
+        flowget::parse_resume_state(read_sidecar(options.output_path));
+    ASSERT_TRUE(parsed.ok()) << parsed.error;
+    ASSERT_EQ(parsed.state.segments.size(), 1U);
+    const flowget::ResumeSegment& segment = parsed.state.segments.front();
+    EXPECT_EQ(segment.start, 0);
+    EXPECT_EQ(segment.end, static_cast<std::int64_t>(payload.size()));
+    EXPECT_GT(segment.done, 0);
+    EXPECT_LT(segment.done, static_cast<std::int64_t>(payload.size()));
+
+    // The file is preallocated to the full size; only the checkpointed prefix is durable data.
+    const std::string partial = read_file(options.output_path);
+    ASSERT_EQ(partial.size(), payload.size());
+    EXPECT_EQ(partial.substr(0, static_cast<std::size_t>(segment.done)),
+              payload.substr(0, static_cast<std::size_t>(segment.done)));
+}
+
+TEST(SingleStreamDownload, FlushFailureEndsWithIoAndPublishesNoSidecar) {
+    const std::string payload = make_payload(512 * 1024);
+    HttpTestServer server([&payload](const flowget::test::Request&) {
+        flowget::test::Response response;
+        response.status = 200;
+        response.body = payload;
+        response.headers["ETag"] = "\"checkpoint-v1\"";
+        response.throttle_bytes_per_second = 128 * 1024;
+        return response;
+    });
+
+    HttpClient client;
+    SingleStreamDownloader downloader{client};
+
+    flowget::DownloadOptions options;
+    options.url = server.url("/flush-fails.bin");
+    options.output_path = to_utf8(make_temp_dir() / "flush-fails.bin");
+
+    SingleStreamSettings settings;
+    settings.storage_factory = [] {
+        return std::make_unique<FlushFailingStorage>(flowget::make_platform_storage());
+    };
+    // Force the very first checkpoint to flush, so the failure is the checkpoint's, not only the
+    // final one.
+    settings.checkpoint_interval = std::chrono::milliseconds{0};
+    const flowget::DownloadSummary summary = downloader.download(options, {}, nullptr, settings);
+
+    EXPECT_FALSE(summary.ok());
+    EXPECT_EQ(summary.http.error, HttpError::io);
+    EXPECT_NE(summary.message.find("flush"), std::string::npos) << summary.message;
+    // A sidecar that claims bytes from a failed flush must never be published.
+    EXPECT_FALSE(file_exists(flowget::resume_sidecar_path(options.output_path)));
+    EXPECT_FALSE(file_exists(options.output_path));
 }
 
 TEST(SingleStreamDownload, DetectsDroppedConnection) {

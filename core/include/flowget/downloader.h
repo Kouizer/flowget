@@ -18,7 +18,7 @@ public:
 
     // Writes to `options.output_path`. A validated sidecar (S5) continues from the bytes already
     // on disk; otherwise the file is truncated. `options.connections` is clamped to [1, 64]; 1
-    // skips probing entirely and never resumes (single-stream resume is S5b).
+    // skips probing and uses the single-stream resume path, which reads the same sidecar format.
     DownloadSummary download(const DownloadOptions& options,
                              const ProgressCallback& on_progress = {},
                              const std::atomic<bool>* cancel = nullptr);

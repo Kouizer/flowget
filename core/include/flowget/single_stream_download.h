@@ -3,24 +3,41 @@
 
 #include <flowget/download.h>
 #include <flowget/http_client.h>
+#include <flowget/storage.h>
 
 #include <atomic>
+#include <chrono>
+#include <functional>
+#include <memory>
 
 namespace flowget {
 
-// M1/S1b: one connection, one file, no resume. It is the fallback for servers without range
-// support (S4) and writes through IStorage so non-ASCII paths and partial writes behave the same as
-// in the segmented engine.
+// Test seam, same idea as SegmentedSettings: production uses make_platform_storage() and the 2 s
+// S5 checkpoint interval; tests inject storage failures and shorten the interval.
+struct SingleStreamSettings {
+    std::function<std::unique_ptr<IStorage>()> storage_factory;
+    std::chrono::milliseconds checkpoint_interval{2000};
+};
+
+// M1/S1b: one connection, one file. It is the fallback for servers without range support (S4) and
+// the `--connections 1` path, and since S5b it resumes from the same `.flowget` sidecar format the
+// segmented engine writes (one segment `[0, total)` plus the durable byte count).
 class SingleStreamDownloader {
 public:
     explicit SingleStreamDownloader(HttpClient& client);
 
-    // Writes the response body to `options.output_path`, truncating an existing file. The header
-    // fields of `options` other than url/user_agent/headers are ignored. On failure the partial
-    // file is removed, because a single-stream transfer has no resume state to keep.
+    // Writes the response body to `options.output_path`. A validated single-stream sidecar makes
+    // the request continue at the sidecar's durable `done` with `Range: bytes=done-` and
+    // `If-Range`; a 200 answer (the server ignored the range or the representation changed) starts
+    // over and truncates the file. Resume needs a known Content-Length: without one the file size
+    // cannot be verified, so the transfer starts from zero and no checkpoint is written.
+    //
+    // Cancellation and transport failures keep the partial file and its sidecar so the next run can
+    // continue; an HTTP error that leaves nothing written removes the empty file.
     DownloadSummary download(const DownloadOptions& options,
                              const ProgressCallback& on_progress = {},
-                             const std::atomic<bool>* cancel = nullptr);
+                             const std::atomic<bool>* cancel = nullptr,
+                             const SingleStreamSettings& settings = {});
 
 private:
     HttpClient& client_;

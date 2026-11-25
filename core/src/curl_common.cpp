@@ -101,9 +101,10 @@ bool configure_easy(CURL* handle,
                     curl_slist* outgoing_headers) {
     const bool ranged = request.range_start >= 0 || request.range_length >= 0;
     if (ranged) {
-        if (request.range_start < 0 || request.range_length <= 0 ||
-            request.range_start >
-                std::numeric_limits<std::int64_t>::max() - (request.range_length - 1)) {
+        const bool open_ended = request.range_start >= 0 && request.range_length == -1;
+        if (request.range_start < 0 || (!open_ended && request.range_length <= 0) ||
+            (!open_ended && request.range_start > std::numeric_limits<std::int64_t>::max() -
+                                                      (request.range_length - 1))) {
             return false;
         }
     }
@@ -119,6 +120,9 @@ bool configure_easy(CURL* handle,
     curl_easy_setopt(handle, CURLOPT_MAXREDIRS, 10L);
     // Byte offsets must refer to the payload, not to a compressed stream (ADR-0001).
     curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "identity");
+    // A proxy CONNECT response must not look like the resource response to the header consumer:
+    // the resume decision keys off the final status line.
+    curl_easy_setopt(handle, CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
     curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 1L);
     curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, 15L);
@@ -136,8 +140,11 @@ bool configure_easy(CURL* handle,
         // connection and a reused idle connection would make them sequential. See curl_common.h.
         curl_easy_setopt(handle, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
         curl_easy_setopt(handle, CURLOPT_FRESH_CONNECT, 1L);
-        const std::string range = std::to_string(request.range_start) + "-" +
-                                  std::to_string(request.range_start + request.range_length - 1);
+        const std::string range =
+            request.range_length < 0
+                ? std::to_string(request.range_start) + "-"
+                : std::to_string(request.range_start) + "-" +
+                      std::to_string(request.range_start + request.range_length - 1);
         curl_easy_setopt(handle, CURLOPT_RANGE, range.c_str());
     }
     return true;

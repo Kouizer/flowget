@@ -25,15 +25,16 @@ struct DownloadOptions {
     // segment, and the single-stream request.
     std::map<std::string, std::string> headers;
     // Concurrent connections for the segmented engine, clamped to [1, 64]. 1 means "single stream
-    // without probing", which is also what a server without range support gets.
+    // without probing", which is also what a server without range support gets; that path resumes
+    // from its own single-segment sidecar.
     int connections = 8;
     // When true (the default), a valid sidecar makes a segmented download continue from the bytes
     // already on disk. false deletes the sidecar and starts from zero.
     bool resume = true;
-    // Called once, before the first data request of a segmented download, after the resume
-    // decision. The argument is the number of bytes already durable: 0 for a fresh download, the
-    // full size for an output that was already complete. Single-stream downloads (S5b) do not call
-    // it. Must not throw.
+    // Called once per download, before the first body byte is written, after the resume decision.
+    // The argument is the number of bytes already durable: 0 for a fresh download (including a
+    // resume request that the server answered with 200), the checkpointed `done` for a resumed one,
+    // and the full size for an output that was already complete. Must not throw.
     std::function<void(std::int64_t)> on_resume;
 };
 
