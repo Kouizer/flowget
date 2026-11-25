@@ -101,6 +101,14 @@ void preallocate_file(const std::string& utf8_path, std::int64_t size) {
     ASSERT_FALSE(error) << error.message();
 }
 
+// Writes bytes at offset 0 without truncating, so a preallocated file keeps its announced length.
+void write_prefix(const std::string& utf8_path, std::string_view bytes) {
+    std::fstream file{from_utf8(utf8_path), std::ios::binary | std::ios::in | std::ios::out};
+    ASSERT_TRUE(file) << "cannot open " << utf8_path;
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(file.good());
+}
+
 bool file_exists(const std::string& utf8_path) {
     return std::filesystem::exists(from_utf8(utf8_path));
 }
@@ -305,6 +313,55 @@ TEST(ResumeDownload, ContinuesFromACheckpointAfterCancellation) {
     std::sort(requested_starts.begin(), requested_starts.end());
     std::sort(expected_starts.begin(), expected_starts.end());
     EXPECT_EQ(requested_starts, expected_starts);
+}
+
+TEST(ResumeDownload, SingleStreamResumesItsOwnSidecar) {
+    const std::string payload = make_payload(2 * kMiB);
+    const std::int64_t total = static_cast<std::int64_t>(payload.size());
+    const std::int64_t durable = 700 * 1024;
+    CapturedRequests captured;
+    HttpTestServer server([&payload, &captured](const Request& request) {
+        captured.add(request);
+        return ranged_response(payload);
+    });
+
+    DownloadOptions options = make_options(server, "single-resume.bin");
+    options.connections = 1;
+    std::vector<std::int64_t> notices;
+    options.on_resume = [&notices](std::int64_t bytes) { notices.push_back(bytes); };
+
+    preallocate_file(options.output_path, total);
+    // The file holds an unflushed tail beyond the sidecar's done; only `done` may be trusted.
+    write_prefix(options.output_path, std::string_view{payload}.substr(0, 900 * 1024));
+    ResumeState state;
+    state.url = options.url;
+    state.total_bytes = total;
+    state.etag = kEtag;
+    state.segments = {ResumeSegment{0, total, durable}};
+    write_sidecar(options.output_path, serialize_resume_state(state));
+
+    HttpClient client;
+    Downloader downloader{client};
+    const DownloadSummary summary = downloader.download(options);
+
+    ASSERT_TRUE(summary.ok()) << summary.message;
+    EXPECT_TRUE(summary.resumed);
+    EXPECT_EQ(summary.resumed_from_bytes, durable);
+    EXPECT_TRUE(summary.resume_note.empty()) << summary.resume_note;
+    EXPECT_EQ(read_file(options.output_path), payload);
+    EXPECT_FALSE(file_exists(flowget::resume_sidecar_path(options.output_path)));
+
+    const std::vector<Request> requests = captured.snapshot();
+    ASSERT_EQ(requests.size(), 1U);
+    const auto range = requests.front().headers.find("range");
+    ASSERT_NE(range, requests.front().headers.end());
+    EXPECT_EQ(range->second, "bytes=" + std::to_string(durable) + "-");
+    const auto if_range = requests.front().headers.find("if-range");
+    ASSERT_NE(if_range, requests.front().headers.end());
+    EXPECT_EQ(if_range->second, kEtag);
+
+    ASSERT_EQ(notices.size(), 1U);
+    EXPECT_EQ(notices.front(), durable);
 }
 
 TEST(ResumeDownload, PublishesPeriodicCheckpointsDuringALongTransfer) {

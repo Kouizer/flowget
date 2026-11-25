@@ -32,8 +32,9 @@ public:
     // over and truncates the file. Resume needs a known Content-Length: without one the file size
     // cannot be verified, so the transfer starts from zero and no checkpoint is written.
     //
-    // Cancellation and transport failures keep the partial file and its sidecar so the next run can
-    // continue; an HTTP error that leaves nothing written removes the empty file.
+    // Cancellation and transport failures keep the partial file and its sidecar when a checkpoint
+    // makes the prefix resumable; without one (no validator, or nothing written yet) the file is
+    // removed because the next run could not verify it.
     DownloadSummary download(const DownloadOptions& options,
                              const ProgressCallback& on_progress = {},
                              const std::atomic<bool>* cancel = nullptr,

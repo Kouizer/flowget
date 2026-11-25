@@ -14,8 +14,11 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -82,6 +85,57 @@ std::string read_sidecar(const std::string& output_path) {
         << error;
     return contents;
 }
+
+void write_sidecar(const std::string& output_path, const flowget::ResumeState& state) {
+    std::ofstream file{from_utf8(flowget::resume_sidecar_path(output_path)),
+                       std::ios::binary | std::ios::trunc};
+    const std::string contents = flowget::serialize_resume_state(state);
+    file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    ASSERT_TRUE(file.good());
+}
+
+void preallocate_file(const std::string& utf8_path, std::int64_t size) {
+    {
+        std::ofstream file{from_utf8(utf8_path), std::ios::binary | std::ios::trunc};
+    }
+    std::error_code error;
+    std::filesystem::resize_file(from_utf8(utf8_path), static_cast<std::uintmax_t>(size), error);
+    ASSERT_FALSE(error) << error.message();
+}
+
+void write_prefix(const std::string& utf8_path, std::string_view bytes) {
+    std::fstream file{from_utf8(utf8_path), std::ios::binary | std::ios::in | std::ios::out};
+    ASSERT_TRUE(file) << "cannot open " << utf8_path;
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(file.good());
+}
+
+flowget::ResumeState single_stream_state(const std::string& url,
+                                         std::int64_t total,
+                                         std::int64_t done,
+                                         std::string etag = "\"resume-v1\"") {
+    flowget::ResumeState state;
+    state.url = url;
+    state.total_bytes = total;
+    state.etag = std::move(etag);
+    state.segments = {flowget::ResumeSegment{0, total, done}};
+    return state;
+}
+
+struct CapturedRequests {
+    void add(const flowget::test::Request& request) {
+        const std::lock_guard<std::mutex> lock{mutex};
+        requests.push_back(request);
+    }
+
+    [[nodiscard]] std::vector<flowget::test::Request> snapshot() const {
+        const std::lock_guard<std::mutex> lock{mutex};
+        return requests;
+    }
+
+    mutable std::mutex mutex;
+    std::vector<flowget::test::Request> requests;
+};
 
 // Delegates everything to the real storage but fails every flush, which is how a disk that stops
 // accepting data looks to the engine.
@@ -468,6 +522,243 @@ TEST(SingleStreamDownload, FlushFailureEndsWithIoAndPublishesNoSidecar) {
     // A sidecar that claims bytes from a failed flush must never be published.
     EXPECT_FALSE(file_exists(flowget::resume_sidecar_path(options.output_path)));
     EXPECT_FALSE(file_exists(options.output_path));
+}
+
+TEST(SingleStreamDownload, ResumesFromTheCheckpointedPrefix) {
+    const std::string payload = make_payload(512 * 1024);
+    // The sidecar's `done` is the durable prefix; the file additionally holds an unflushed tail,
+    // which a resume must overwrite rather than trust (S5b decision).
+    const std::int64_t durable = 200 * 1024;
+    const std::size_t written_tail = 300 * 1024;
+
+    CapturedRequests captured;
+    HttpTestServer server([&payload, &captured](const flowget::test::Request& request) {
+        captured.add(request);
+        flowget::test::Response response;
+        response.status = 200;
+        response.body = payload;
+        response.headers["ETag"] = "\"resume-v1\"";
+        response.honor_range = true;
+        return response;
+    });
+
+    HttpClient client;
+    SingleStreamDownloader downloader{client};
+
+    flowget::DownloadOptions options;
+    options.url = server.url("/resume.bin");
+    options.output_path = to_utf8(make_temp_dir() / "resume.bin");
+
+    preallocate_file(options.output_path, static_cast<std::int64_t>(payload.size()));
+    write_prefix(options.output_path, std::string_view{payload}.substr(0, written_tail));
+    write_sidecar(options.output_path,
+                  single_stream_state(options.url, static_cast<std::int64_t>(payload.size()),
+                                      durable));
+
+    std::vector<std::int64_t> notices;
+    options.on_resume = [&notices](std::int64_t bytes) { notices.push_back(bytes); };
+
+    const flowget::DownloadSummary summary = downloader.download(options);
+
+    ASSERT_TRUE(summary.ok()) << summary.message;
+    EXPECT_TRUE(summary.resumed);
+    EXPECT_EQ(summary.resumed_from_bytes, durable);
+    EXPECT_TRUE(summary.resume_note.empty()) << summary.resume_note;
+    EXPECT_EQ(read_file(options.output_path), payload);
+    EXPECT_FALSE(file_exists(flowget::resume_sidecar_path(options.output_path)));
+
+    const std::vector<flowget::test::Request> requests = captured.snapshot();
+    ASSERT_EQ(requests.size(), 1U);
+    const auto range = requests.front().headers.find("range");
+    ASSERT_NE(range, requests.front().headers.end());
+    EXPECT_EQ(range->second, "bytes=204800-");
+    const auto if_range = requests.front().headers.find("if-range");
+    ASSERT_NE(if_range, requests.front().headers.end());
+    EXPECT_EQ(if_range->second, "\"resume-v1\"");
+
+    ASSERT_EQ(notices.size(), 1U);
+    EXPECT_EQ(notices.front(), durable);
+}
+
+TEST(SingleStreamDownload, RestartsFromZeroWhenTheServerIgnoresTheRange) {
+    const std::string payload = make_payload(512 * 1024);
+    const std::int64_t durable = 200 * 1024;
+
+    CapturedRequests captured;
+    HttpTestServer server([&payload, &captured](const flowget::test::Request& request) {
+        captured.add(request);
+        flowget::test::Response response;
+        response.status = 200;
+        response.body = payload;
+        response.headers["ETag"] = "\"resume-v1\"";
+        // honour_range stays false: a server that ignores Range answers 200 with the whole body.
+        return response;
+    });
+
+    HttpClient client;
+    SingleStreamDownloader downloader{client};
+
+    flowget::DownloadOptions options;
+    options.url = server.url("/ignores-range.bin");
+    options.output_path = to_utf8(make_temp_dir() / "ignores-range.bin");
+
+    preallocate_file(options.output_path, static_cast<std::int64_t>(payload.size()));
+    write_prefix(options.output_path, std::string_view{payload}.substr(0, 300 * 1024));
+    write_sidecar(options.output_path,
+                  single_stream_state(options.url, static_cast<std::int64_t>(payload.size()),
+                                      durable));
+
+    std::vector<std::int64_t> notices;
+    options.on_resume = [&notices](std::int64_t bytes) { notices.push_back(bytes); };
+
+    const flowget::DownloadSummary summary = downloader.download(options);
+
+    ASSERT_TRUE(summary.ok()) << summary.message;
+    EXPECT_FALSE(summary.resumed);
+    EXPECT_EQ(summary.resumed_from_bytes, 0);
+    EXPECT_NE(summary.resume_note.find("200"), std::string::npos) << summary.resume_note;
+    EXPECT_EQ(read_file(options.output_path), payload);
+    EXPECT_FALSE(file_exists(flowget::resume_sidecar_path(options.output_path)));
+
+    const std::vector<flowget::test::Request> requests = captured.snapshot();
+    ASSERT_EQ(requests.size(), 1U);
+    const auto range = requests.front().headers.find("range");
+    ASSERT_NE(range, requests.front().headers.end());
+    EXPECT_EQ(range->second, "bytes=204800-");
+
+    ASSERT_EQ(notices.size(), 1U);
+    EXPECT_EQ(notices.front(), 0);
+}
+
+TEST(SingleStreamDownload, AlreadyCompleteSidecarSkipsTheRequest) {
+    const std::string payload = make_payload(128 * 1024);
+    HttpTestServer server([&payload](const flowget::test::Request&) {
+        flowget::test::Response response;
+        response.status = 200;
+        response.body = payload;
+        response.headers["ETag"] = "\"resume-v1\"";
+        return response;
+    });
+
+    HttpClient client;
+    SingleStreamDownloader downloader{client};
+
+    flowget::DownloadOptions options;
+    options.url = server.url("/already-complete.bin");
+    options.output_path = to_utf8(make_temp_dir() / "already-complete.bin");
+
+    preallocate_file(options.output_path, static_cast<std::int64_t>(payload.size()));
+    write_prefix(options.output_path, payload);
+    write_sidecar(options.output_path,
+                  single_stream_state(options.url, static_cast<std::int64_t>(payload.size()),
+                                      static_cast<std::int64_t>(payload.size())));
+
+    const flowget::DownloadSummary summary = downloader.download(options);
+
+    ASSERT_TRUE(summary.ok()) << summary.message;
+    EXPECT_TRUE(summary.resumed);
+    EXPECT_EQ(summary.resumed_from_bytes, static_cast<std::int64_t>(payload.size()));
+    EXPECT_EQ(summary.bytes_written, static_cast<std::int64_t>(payload.size()));
+    EXPECT_EQ(summary.connections, 0);
+    EXPECT_EQ(server.request_count(), 0U);
+    EXPECT_EQ(read_file(options.output_path), payload);
+    EXPECT_FALSE(file_exists(flowget::resume_sidecar_path(options.output_path)));
+}
+
+TEST(SingleStreamDownload, IgnoresTheSidecarWhenTheFileSizeDoesNotMatch) {
+    const std::string payload = make_payload(512 * 1024);
+    CapturedRequests captured;
+    HttpTestServer server([&payload, &captured](const flowget::test::Request& request) {
+        captured.add(request);
+        flowget::test::Response response;
+        response.status = 200;
+        response.body = payload;
+        response.headers["ETag"] = "\"resume-v1\"";
+        response.honor_range = true;
+        return response;
+    });
+
+    HttpClient client;
+    SingleStreamDownloader downloader{client};
+
+    flowget::DownloadOptions options;
+    options.url = server.url("/size-mismatch.bin");
+    options.output_path = to_utf8(make_temp_dir() / "size-mismatch.bin");
+
+    // A sidecar whose preallocated file is missing: its `done` cannot be trusted.
+    preallocate_file(options.output_path, 256 * 1024);
+    write_prefix(options.output_path, std::string_view{payload}.substr(0, 256 * 1024));
+    write_sidecar(options.output_path,
+                  single_stream_state(options.url, static_cast<std::int64_t>(payload.size()),
+                                      128 * 1024));
+
+    const flowget::DownloadSummary summary = downloader.download(options);
+
+    ASSERT_TRUE(summary.ok()) << summary.message;
+    EXPECT_FALSE(summary.resumed);
+    EXPECT_NE(summary.resume_note.find("wrong size"), std::string::npos) << summary.resume_note;
+    EXPECT_EQ(read_file(options.output_path), payload);
+    EXPECT_FALSE(file_exists(flowget::resume_sidecar_path(options.output_path)));
+
+    const std::vector<flowget::test::Request> requests = captured.snapshot();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_EQ(requests.front().headers.count("range"), 0U);
+}
+
+TEST(SingleStreamDownload, RestartsWhenA206ContradictsTheSidecar) {
+    const std::string payload = make_payload(512 * 1024);
+    const std::int64_t durable = 200 * 1024;
+
+    CapturedRequests captured;
+    HttpTestServer server([&payload, &captured](const flowget::test::Request& request) {
+        captured.add(request);
+        flowget::test::Response response;
+        response.status = 200;
+        response.body = payload;
+        // A server that honours Range with a *different* validator is either broken or serving a
+        // changed representation; either way the sidecar's prefix cannot be trusted.
+        response.headers["ETag"] = "\"resume-v2\"";
+        response.honor_range = true;
+        return response;
+    });
+
+    HttpClient client;
+    SingleStreamDownloader downloader{client};
+
+    flowget::DownloadOptions options;
+    options.url = server.url("/validator-changed.bin");
+    options.output_path = to_utf8(make_temp_dir() / "validator-changed.bin");
+
+    preallocate_file(options.output_path, static_cast<std::int64_t>(payload.size()));
+    write_prefix(options.output_path, std::string_view{payload}.substr(0, 300 * 1024));
+    write_sidecar(options.output_path,
+                  single_stream_state(options.url, static_cast<std::int64_t>(payload.size()),
+                                      durable));
+
+    std::vector<std::int64_t> notices;
+    options.on_resume = [&notices](std::int64_t bytes) { notices.push_back(bytes); };
+
+    const flowget::DownloadSummary summary = downloader.download(options);
+
+    ASSERT_TRUE(summary.ok()) << summary.message;
+    EXPECT_FALSE(summary.resumed);
+    EXPECT_EQ(summary.resumed_from_bytes, 0);
+    EXPECT_NE(summary.resume_note.find("no longer matches"), std::string::npos)
+        << summary.resume_note;
+    EXPECT_EQ(read_file(options.output_path), payload);
+    EXPECT_FALSE(file_exists(flowget::resume_sidecar_path(options.output_path)));
+
+    // The first request resumes; the contradictory 206 is dropped and the retry asks for the whole
+    // file without a range.
+    const std::vector<flowget::test::Request> requests = captured.snapshot();
+    ASSERT_EQ(requests.size(), 2U);
+    const auto first_range = requests[0].headers.find("range");
+    ASSERT_NE(first_range, requests[0].headers.end());
+    EXPECT_EQ(first_range->second, "bytes=204800-");
+    EXPECT_EQ(requests[1].headers.count("range"), 0U);
+    // The fresh retry announces a start from zero, like any request the server answered with 200.
+    ASSERT_EQ(notices.size(), 1U);
+    EXPECT_EQ(notices.front(), 0);
 }
 
 TEST(SingleStreamDownload, DetectsDroppedConnection) {

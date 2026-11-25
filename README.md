@@ -6,9 +6,13 @@ FlowGet uses multiple parallel HTTP range requests, dynamically rebalances segme
 downloads across restarts. A browser extension sends links and media streams straight to the app,
 and the desktop build can hand supported sites to [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
-> **Status: M1 in progress.** Dependencies are pinned in `vcpkg.json`, and
-> `flowget-cli get <url> -o <file>` downloads over a single connection. Segmented downloads, resume
-> and rate limits are next. See [`tasks/todo.md`](tasks/todo.md) for the live milestone plan.
+> **Status: M1 in progress.** Dependencies are pinned in `vcpkg.json`. Segmented downloads and
+> single-stream resume are implemented; retry policy and rate limits are next. See
+> [`tasks/todo.md`](tasks/todo.md) for the live milestone plan.
+>
+> **Resume is on by default.** A download stores its durable progress in `<file>.flowget` next to
+> the output and continues from there after a crash, Ctrl+C or a restart; `--no-resume` discards that
+> file and starts over. The sidecar stays a small JSON file until M2 moves it into SQLite.
 
 ## What it is / what it is not
 

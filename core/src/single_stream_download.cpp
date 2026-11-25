@@ -1,3 +1,4 @@
+#include <flowget/http_range.h>
 #include <flowget/resume_state.h>
 #include <flowget/single_stream_download.h>
 #include <flowget/storage.h>
@@ -10,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -25,6 +27,12 @@ struct AttemptResult {
     bool completed = false;
     // The server answered a full request with a partial body: not a resumable condition.
     std::string bad_response;
+    // The sidecar no longer describes what the server is sending. The caller deletes it and runs a
+    // plain request; nothing from this attempt may reach the file.
+    bool restart_fresh = false;
+    // The request asked for a range, but the server answered 200 and the whole representation is
+    // being rewritten from byte zero.
+    bool restarted_from_zero = false;
 };
 
 ResumeState single_stream_state(const DownloadOptions& options,
@@ -41,20 +49,57 @@ ResumeState single_stream_state(const DownloadOptions& options,
     return state;
 }
 
-// One fresh request. The file is truncated, then preallocated to the announced length, so the
-// sidecar's `done` (not the file size) is the only meaningful progress until the transfer ends.
-AttemptResult run_fresh_attempt(HttpClient& client,
-                                const DownloadOptions& options,
-                                std::unique_ptr<IStorage> storage,
-                                const std::string& sidecar_path,
-                                const ProgressCallback& on_progress,
-                                const std::atomic<bool>* cancel,
-                                std::chrono::milliseconds checkpoint_interval) {
+// Empty when the sidecar can be resumed from; otherwise the user-facing reason to start fresh.
+// Everything here is provable without a network request: the file size is the preallocated length,
+// so `done` (not the file size) stays the only trusted progress value.
+std::string resume_mismatch(const ResumeState& state, const DownloadOptions& options) {
+    if (state.url != options.url) {
+        return "the URL changed";
+    }
+    if (state.total_bytes <= 0) {
+        return "the sidecar has no file size";
+    }
+    if (state.segments.size() != 1) {
+        return "the sidecar is not a single-stream checkpoint";
+    }
+    const ResumeSegment& part = state.segments.front();
+    if (part.start != 0 || part.end != state.total_bytes || part.length() != state.total_bytes) {
+        return "the sidecar segment does not cover the file";
+    }
+    if (part.done < 0 || part.done > part.length()) {
+        return "the sidecar progress is out of range";
+    }
+    if (detail::select_if_range(state.etag, state.last_modified).empty()) {
+        return "the sidecar has no usable validator";
+    }
+    if (detail::file_size_or_unknown(options.output_path) != state.total_bytes) {
+        return "the partial file is missing or has the wrong size";
+    }
+    if (part.done == 0) {
+        return "the sidecar has no progress to resume from";
+    }
+    return {};
+}
+
+// One request. The file is truncated for a fresh start and left intact for a resume; in both cases
+// it is preallocated to the announced length, so the sidecar's `done` (not the file size) is the
+// only meaningful progress until the transfer ends.
+AttemptResult run_attempt(HttpClient& client,
+                          const DownloadOptions& options,
+                          IStorage& storage,
+                          const std::string& sidecar_path,
+                          const ProgressCallback& on_progress,
+                          const std::atomic<bool>* cancel,
+                          std::chrono::milliseconds checkpoint_interval,
+                          const ResumeState* resume) {
     AttemptResult attempt;
     DownloadSummary& summary = attempt.summary;
     summary.connections = 1;
 
-    const StorageResult opened = storage->open(options.output_path, OpenMode::read_write_truncate);
+    const std::int64_t resumed_from = resume != nullptr ? resume->bytes_done() : 0;
+    const OpenMode open_mode =
+        resume != nullptr ? OpenMode::read_write : OpenMode::read_write_truncate;
+    const StorageResult opened = storage.open(options.output_path, open_mode);
     if (!opened.ok()) {
         summary.http.error = HttpError::io;
         summary.message =
@@ -63,19 +108,20 @@ AttemptResult run_fresh_attempt(HttpClient& client,
         return attempt;
     }
 
-    std::int64_t total = -1;
-    std::int64_t offset = 0;
-    std::string etag;
-    std::string last_modified;
-    std::string if_range;
+    std::int64_t total = resume != nullptr ? resume->total_bytes : -1;
+    std::int64_t offset = resumed_from;
+    std::string etag = resume != nullptr ? resume->etag : std::string{};
+    std::string last_modified = resume != nullptr ? resume->last_modified : std::string{};
+    std::string if_range = detail::select_if_range(etag, last_modified);
     bool response_seen = false;
     bool write_allowed = false;
-    bool checkpoint_enabled = false;
+    // A resume already has durable bytes and a validator, so the first timer may publish at once.
+    bool checkpoint_enabled = resume != nullptr;
     bool write_failed = false;
     bool checkpoint_fatal = false;
     std::string write_message;
     std::string checkpoint_error;
-    std::int64_t checkpointed_bytes = 0;
+    std::int64_t checkpointed_bytes = offset;
 
     // S5 checkpoint order: data flush first, then the atomically replaced sidecar. A data flush
     // failure is terminal; a sidecar write failure is retried at the next trigger.
@@ -85,7 +131,7 @@ AttemptResult run_fresh_attempt(HttpClient& client,
         }
         std::string error;
         const CheckpointResult result = detail::publish_resume_checkpoint(
-            *storage,
+            storage,
             sidecar_path,
             single_stream_state(options, total, etag, last_modified, offset),
             error);
@@ -111,7 +157,7 @@ AttemptResult run_fresh_attempt(HttpClient& client,
             return true;
         }
         std::size_t written = 0;
-        const StorageResult result = storage->write_at(offset, data, size, written);
+        const StorageResult result = storage.write_at(offset, data, size, written);
         if (!result.ok() || written != size) {
             write_failed = true;
             write_message =
@@ -143,6 +189,12 @@ AttemptResult run_fresh_attempt(HttpClient& client,
     request.url = options.url;
     request.user_agent = options.user_agent;
     request.headers = options.headers;
+    if (resume != nullptr) {
+        // Open-ended suffix: the server sends `total - done` bytes starting at `done`.
+        request.range_start = resumed_from;
+        request.range_length = -1;
+        request.headers["If-Range"] = if_range;
+    }
 
     // The transport calls this before the first body byte, which is the only point where the body
     // sink can learn the file size (preallocation) and the validator (checkpoint decision).
@@ -152,12 +204,60 @@ AttemptResult run_fresh_attempt(HttpClient& client,
         }
         response_seen = true;
 
+        if (resume != nullptr && response.status == 206) {
+            const std::optional<ContentRange> range = parse_content_range(response.content_range);
+            const bool range_ok = range.has_value() && range->has_range() &&
+                                  range->first == resumed_from &&
+                                  (range->last < 0 || range->last == total - 1) &&
+                                  (range->total < 0 || range->total == total);
+            const bool length_ok =
+                response.content_length < 0 || response.content_length == total - resumed_from;
+            // If-Range already asked the server to fall back to 200 on a changed representation;
+            // a 206 that still contradicts the sidecar means the server is not trustworthy. A
+            // header the server omitted cannot contradict the sidecar.
+            const bool validator_ok =
+                is_strong_etag(etag)
+                    ? (response.etag.empty() || response.etag == etag)
+                    : (response.last_modified.empty() || response.last_modified == last_modified);
+            if (!range_ok || !length_ok || !validator_ok) {
+                attempt.restart_fresh = true;
+                write_allowed = false;
+                return;
+            }
+            if (options.on_resume) {
+                options.on_resume(resumed_from);
+            }
+            write_allowed = true;
+            return;
+        }
+
         if (response.status >= 200 && response.status < 300 && response.status != 206) {
+            const bool was_resuming = resume != nullptr;
+            if (was_resuming) {
+                // 200 to a range request: the representation changed or the server ignored Range.
+                // The body is the whole resource, so truncate in place instead of paying for a
+                // second request. The old sidecar must not survive this decision: it points at a
+                // prefix that is being rewritten.
+                const StorageResult closed = storage.close();
+                const StorageResult reopened =
+                    storage.open(options.output_path, OpenMode::read_write_truncate);
+                if (!closed.ok() || !reopened.ok()) {
+                    write_failed = true;
+                    write_message = !reopened.ok() && !reopened.message.empty()
+                                        ? reopened.message
+                                        : "cannot restart " + options.output_path;
+                    return;
+                }
+                detail::forget_sidecar(sidecar_path);
+                offset = 0;
+                checkpointed_bytes = 0;
+                attempt.restarted_from_zero = true;
+            }
             total = response.content_length;
             etag = response.etag;
             last_modified = response.last_modified;
             if (total >= 0) {
-                const StorageResult preallocated = storage->preallocate(total);
+                const StorageResult preallocated = storage.preallocate(total);
                 if (storage_error_is_fatal(preallocated.error)) {
                     write_failed = true;
                     write_message = preallocated.message.empty()
@@ -183,6 +283,11 @@ AttemptResult run_fresh_attempt(HttpClient& client,
 
     summary.http = client.get(request, sink, cancel);
 
+    if (attempt.restart_fresh) {
+        // Not an error: the caller drops the sidecar and repeats the request without a range.
+        return attempt;
+    }
+
     if (write_failed) {
         summary.http.error = HttpError::io;
         summary.message =
@@ -205,7 +310,7 @@ AttemptResult run_fresh_attempt(HttpClient& client,
     }
 
     if (summary.http.ok()) {
-        const StorageResult flushed = storage->flush();
+        const StorageResult flushed = storage.flush();
         if (!flushed.ok()) {
             summary.http.error = HttpError::io;
             summary.message =
@@ -225,7 +330,7 @@ AttemptResult run_fresh_attempt(HttpClient& client,
         }
     }
 
-    const StorageResult closed = storage->close();
+    const StorageResult closed = storage.close();
     if (!closed.ok() && summary.http.ok()) {
         summary.http.error = HttpError::io;
         summary.message =
@@ -249,6 +354,23 @@ DownloadSummary finish_attempt(const DownloadOptions& options,
         static_cast<void>(detail::remove_file(options.output_path, remove_error));
     }
     return attempt.summary;
+}
+
+DownloadSummary completed_summary(const DownloadOptions& options,
+                                  const ResumeState& state,
+                                  const std::string& resume_note) {
+    DownloadSummary summary;
+    summary.http.response.status = 206;
+    summary.http.response.content_length = state.total_bytes;
+    summary.http.response.effective_url = options.url;
+    summary.http.response.etag = state.etag;
+    summary.http.response.last_modified = state.last_modified;
+    summary.bytes_written = state.total_bytes;
+    summary.connections = 0;
+    summary.resumed = true;
+    summary.resumed_from_bytes = state.total_bytes;
+    summary.resume_note = resume_note.empty() ? "already complete" : resume_note;
+    return summary;
 }
 
 } // namespace
@@ -278,20 +400,82 @@ DownloadSummary SingleStreamDownloader::download(const DownloadOptions& options,
         detail::forget_sidecar(sidecar_path);
     }
 
-    std::unique_ptr<IStorage> storage =
-        settings.storage_factory ? settings.storage_factory() : make_platform_storage();
-    AttemptResult attempt = run_fresh_attempt(client_,
-                                              options,
-                                              std::move(storage),
-                                              sidecar_path,
-                                              on_progress,
-                                              cancel,
-                                              settings.checkpoint_interval);
+    ResumeState resume_state;
+    bool have_resume = false;
+    std::string resume_note;
+    if (options.resume) {
+        detail::LoadedSidecar loaded = detail::load_sidecar(sidecar_path);
+        if (!loaded.discard_reason.empty()) {
+            resume_note = "ignored the resume sidecar: " + loaded.discard_reason;
+            detail::forget_sidecar(sidecar_path);
+        } else if (loaded.exists) {
+            const std::string mismatch = resume_mismatch(loaded.state, options);
+            if (mismatch.empty()) {
+                resume_state = std::move(loaded.state);
+                have_resume = true;
+            } else {
+                resume_note = "restarted from zero: " + mismatch;
+                detail::forget_sidecar(sidecar_path);
+            }
+        }
+    }
+
+    const auto make_storage = [&settings]() -> std::unique_ptr<IStorage> {
+        return settings.storage_factory ? settings.storage_factory() : make_platform_storage();
+    };
+
+    if (have_resume && resume_state.bytes_done() == resume_state.total_bytes) {
+        // A checkpoint only reaches the full size after every byte was flushed; no network needed.
+        detail::forget_sidecar(sidecar_path);
+        if (options.on_resume) {
+            options.on_resume(resume_state.total_bytes);
+        }
+        return completed_summary(options, resume_state, resume_note);
+    }
+
+    const std::int64_t resumed_from = have_resume ? resume_state.bytes_done() : 0;
+    std::unique_ptr<IStorage> storage = make_storage();
+    AttemptResult attempt = run_attempt(client_,
+                                        options,
+                                        *storage,
+                                        sidecar_path,
+                                        on_progress,
+                                        cancel,
+                                        settings.checkpoint_interval,
+                                        have_resume ? &resume_state : nullptr);
+    if (attempt.restart_fresh) {
+        // The sidecar pointed at a range the server no longer serves. Drop it and repeat once
+        // without a range, exactly like a server that answers 200 to If-Range.
+        static_cast<void>(storage->close());
+        detail::forget_sidecar(sidecar_path);
+        resume_note = "restarted from zero: the server no longer matches the sidecar";
+        have_resume = false;
+        attempt = run_attempt(client_,
+                              options,
+                              *storage,
+                              sidecar_path,
+                              on_progress,
+                              cancel,
+                              settings.checkpoint_interval,
+                              nullptr);
+    }
+
     if (!attempt.bad_response.empty()) {
         attempt.summary.http.error = HttpError::internal;
         attempt.summary.message = attempt.bad_response;
     }
-    return finish_attempt(options, sidecar_path, attempt);
+
+    DownloadSummary summary = finish_attempt(options, sidecar_path, attempt);
+    if (have_resume && !attempt.restarted_from_zero) {
+        summary.resumed = true;
+        summary.resumed_from_bytes = resumed_from;
+    } else if (attempt.restarted_from_zero) {
+        summary.resumed = false;
+        summary.resumed_from_bytes = 0;
+        resume_note = "restarted from zero: the server answered 200 to the range request";
+    }
+    summary.resume_note = resume_note;
+    return summary;
 }
 
 } // namespace flowget
