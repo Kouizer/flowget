@@ -81,110 +81,265 @@ std::string resume_mismatch(const ResumeState& state, const DownloadOptions& opt
     return {};
 }
 
-// One request. The file is truncated for a fresh start and left intact for a resume; in both cases
-// it is preallocated to the announced length, so the sidecar's `done` (not the file size) is the
-// only meaningful progress until the transfer ends.
-AttemptResult run_attempt(HttpClient& client,
-                          const DownloadOptions& options,
-                          IStorage& storage,
-                          const std::string& sidecar_path,
-                          const ProgressCallback& on_progress,
-                          const std::atomic<bool>* cancel,
-                          std::chrono::milliseconds checkpoint_interval,
-                          const ResumeState* resume) {
+// State of one request attempt. Helpers below take it by reference and own one step each: building
+// the request, validating the response headers, writing a body chunk, publishing a checkpoint and
+// deciding how the attempt ended. Pointers (not references) keep the aggregate assignable.
+struct AttemptContext {
+    const DownloadOptions* options = nullptr;
+    IStorage* storage = nullptr;
+    std::string sidecar_path;
+    const ProgressCallback* on_progress = nullptr;
+    std::chrono::milliseconds checkpoint_interval{};
+    const ResumeState* resume = nullptr;
+
     AttemptResult attempt;
-    DownloadSummary& summary = attempt.summary;
-    summary.connections = 1;
-
-    const std::int64_t resumed_from = resume != nullptr ? resume->bytes_done() : 0;
-    const OpenMode open_mode =
-        resume != nullptr ? OpenMode::read_write : OpenMode::read_write_truncate;
-    const StorageResult opened = storage.open(options.output_path, open_mode);
-    if (!opened.ok()) {
-        summary.http.error = HttpError::io;
-        summary.message =
-            "cannot open " + options.output_path + " for writing: " +
-            (opened.message.empty() ? storage_error_name(opened.error) : opened.message);
-        return attempt;
-    }
-
-    std::int64_t total = resume != nullptr ? resume->total_bytes : -1;
-    std::int64_t offset = resumed_from;
-    std::string etag = resume != nullptr ? resume->etag : std::string{};
-    std::string last_modified = resume != nullptr ? resume->last_modified : std::string{};
-    std::string if_range = detail::select_if_range(etag, last_modified);
+    std::int64_t total = -1;
+    std::int64_t offset = 0;
+    std::string etag;
+    std::string last_modified;
+    std::string if_range;
     bool response_seen = false;
     bool write_allowed = false;
     // A resume already has durable bytes and a validator, so the first timer may publish at once.
-    bool checkpoint_enabled = resume != nullptr;
+    bool checkpoint_enabled = false;
     bool write_failed = false;
     bool checkpoint_fatal = false;
     std::string write_message;
     std::string checkpoint_error;
-    std::int64_t checkpointed_bytes = offset;
+    std::int64_t checkpointed_bytes = 0;
+    std::chrono::steady_clock::time_point last_report;
+    std::chrono::steady_clock::time_point next_checkpoint;
+};
 
-    // S5 checkpoint order: data flush first, then the atomically replaced sidecar. A data flush
-    // failure is terminal; a sidecar write failure is retried at the next trigger.
-    const auto publish = [&]() -> bool {
-        if (!checkpoint_enabled || offset == checkpointed_bytes) {
-            return true;
-        }
-        std::string error;
-        const CheckpointResult result = detail::publish_resume_checkpoint(
-            storage,
-            sidecar_path,
-            single_stream_state(options, total, etag, last_modified, offset),
-            error);
-        if (result == CheckpointResult::published) {
-            checkpointed_bytes = offset;
-            checkpoint_error.clear();
-            return true;
-        }
-        checkpoint_error = std::move(error);
-        return result != CheckpointResult::data_flush_failed;
-    };
+AttemptContext make_attempt(const DownloadOptions& options,
+                            IStorage& storage,
+                            std::string sidecar_path,
+                            const ProgressCallback& on_progress,
+                            const ResumeState* resume,
+                            std::chrono::milliseconds checkpoint_interval) {
+    AttemptContext context;
+    context.options = &options;
+    context.storage = &storage;
+    context.sidecar_path = std::move(sidecar_path);
+    context.on_progress = &on_progress;
+    context.checkpoint_interval = checkpoint_interval;
+    context.resume = resume;
+    context.attempt.summary.connections = 1;
+    if (resume != nullptr) {
+        context.total = resume->total_bytes;
+        context.offset = resume->bytes_done();
+        context.etag = resume->etag;
+        context.last_modified = resume->last_modified;
+    }
+    context.if_range = detail::select_if_range(context.etag, context.last_modified);
+    context.checkpoint_enabled = resume != nullptr;
+    context.checkpointed_bytes = context.offset;
+    return context;
+}
 
-    auto last_report = std::chrono::steady_clock::now();
-    auto next_checkpoint = last_report + checkpoint_interval;
-
-    const BodySink sink = [&](const std::byte* data, std::size_t size) {
-        if (write_failed || checkpoint_fatal) {
-            return false;
-        }
-        if (!write_allowed) {
-            // An error body, or a response that must not be written: drain it and let the
-            // transport report the status.
-            return true;
-        }
-        std::size_t written = 0;
-        const StorageResult result = storage.write_at(offset, data, size, written);
-        if (!result.ok() || written != size) {
-            write_failed = true;
-            write_message =
-                result.message.empty() ? storage_error_name(result.error) : result.message;
-            return false;
-        }
-        offset += static_cast<std::int64_t>(written);
-
-        if (on_progress) {
-            const auto now = std::chrono::steady_clock::now();
-            if (now - last_report >= 100ms) {
-                last_report = now;
-                on_progress(DownloadProgress{offset, total});
-            }
-        }
-
-        const auto now = std::chrono::steady_clock::now();
-        if (checkpoint_enabled && now >= next_checkpoint) {
-            next_checkpoint = now + checkpoint_interval;
-            if (!publish()) {
-                checkpoint_fatal = true;
-                return false;
-            }
-        }
+// The file is truncated for a fresh start and left intact for a resume; in both cases it is
+// preallocated to the announced length, so the sidecar's `done` (not the file size) is the only
+// meaningful progress until the transfer ends.
+bool open_data_file(AttemptContext& ctx) {
+    const OpenMode open_mode =
+        ctx.resume != nullptr ? OpenMode::read_write : OpenMode::read_write_truncate;
+    const StorageResult opened = ctx.storage->open(ctx.options->output_path, open_mode);
+    if (opened.ok()) {
         return true;
-    };
+    }
+    ctx.attempt.summary.http.error = HttpError::io;
+    ctx.attempt.summary.message =
+        "cannot open " + ctx.options->output_path + " for writing: " +
+        (opened.message.empty() ? storage_error_name(opened.error) : opened.message);
+    return false;
+}
 
+// S5 checkpoint order: data flush first, then the atomically replaced sidecar. A data flush failure
+// is terminal; a sidecar write failure is retried at the next trigger.
+bool publish_checkpoint(AttemptContext& ctx) {
+    if (!ctx.checkpoint_enabled || ctx.offset == ctx.checkpointed_bytes) {
+        return true;
+    }
+    std::string error;
+    const CheckpointResult result = detail::publish_resume_checkpoint(
+        *ctx.storage,
+        ctx.sidecar_path,
+        single_stream_state(*ctx.options, ctx.total, ctx.etag, ctx.last_modified, ctx.offset),
+        error);
+    if (result == CheckpointResult::published) {
+        ctx.checkpointed_bytes = ctx.offset;
+        ctx.checkpoint_error.clear();
+        return true;
+    }
+    ctx.checkpoint_error = std::move(error);
+    return result != CheckpointResult::data_flush_failed;
+}
+
+void report_progress(AttemptContext& ctx) {
+    if (ctx.on_progress == nullptr || !*ctx.on_progress) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - ctx.last_report < 100ms) {
+        return;
+    }
+    ctx.last_report = now;
+    (*ctx.on_progress)(DownloadProgress{ctx.offset, ctx.total});
+}
+
+bool maybe_publish_checkpoint(AttemptContext& ctx) {
+    const auto now = std::chrono::steady_clock::now();
+    if (!ctx.checkpoint_enabled || now < ctx.next_checkpoint) {
+        return true;
+    }
+    ctx.next_checkpoint = now + ctx.checkpoint_interval;
+    if (publish_checkpoint(ctx)) {
+        return true;
+    }
+    ctx.checkpoint_fatal = true;
+    return false;
+}
+
+bool write_chunk(AttemptContext& ctx, const std::byte* data, std::size_t size) {
+    std::size_t written = 0;
+    const StorageResult result = ctx.storage->write_at(ctx.offset, data, size, written);
+    if (!result.ok() || written != size) {
+        ctx.write_failed = true;
+        ctx.write_message =
+            result.message.empty() ? storage_error_name(result.error) : result.message;
+        return false;
+    }
+    ctx.offset += static_cast<std::int64_t>(written);
+    return true;
+}
+
+bool write_body(AttemptContext& ctx, const std::byte* data, std::size_t size) {
+    if (ctx.write_failed || ctx.checkpoint_fatal) {
+        return false;
+    }
+    if (!ctx.write_allowed) {
+        // An error body, or a response that must not be written: drain it and let the transport
+        // report the status.
+        return true;
+    }
+    if (!write_chunk(ctx, data, size)) {
+        return false;
+    }
+    report_progress(ctx);
+    return maybe_publish_checkpoint(ctx);
+}
+
+// A 206 to a range request must describe exactly the durable prefix the sidecar claims. If-Range
+// already asked the server to fall back to 200 on a changed representation; a 206 that still
+// contradicts the sidecar means the server is not trustworthy. A header the server omitted cannot
+// contradict the sidecar.
+bool matches_sidecar(const AttemptContext& ctx, const HttpResponse& response) {
+    const std::optional<ContentRange> range = parse_content_range(response.content_range);
+    const bool range_ok = range.has_value() && range->has_range() && range->first == ctx.offset &&
+                          (range->last < 0 || range->last == ctx.total - 1) &&
+                          (range->total < 0 || range->total == ctx.total);
+    if (!range_ok) {
+        return false;
+    }
+    if (response.content_length >= 0 && response.content_length != ctx.total - ctx.offset) {
+        return false;
+    }
+    if (is_strong_etag(ctx.etag)) {
+        return response.etag.empty() || response.etag == ctx.etag;
+    }
+    return response.last_modified.empty() || response.last_modified == ctx.last_modified;
+}
+
+void handle_partial_response(AttemptContext& ctx, const HttpResponse& response) {
+    if (!matches_sidecar(ctx, response)) {
+        ctx.attempt.restart_fresh = true;
+        ctx.write_allowed = false;
+        return;
+    }
+    if (ctx.options->on_resume) {
+        ctx.options->on_resume(ctx.offset);
+    }
+    ctx.write_allowed = true;
+}
+
+bool restart_at_zero(AttemptContext& ctx) {
+    const StorageResult closed = ctx.storage->close();
+    const StorageResult reopened =
+        ctx.storage->open(ctx.options->output_path, OpenMode::read_write_truncate);
+    if (!closed.ok() || !reopened.ok()) {
+        ctx.write_failed = true;
+        ctx.write_message = !reopened.ok() && !reopened.message.empty()
+                                ? reopened.message
+                                : "cannot restart " + ctx.options->output_path;
+        return false;
+    }
+    detail::forget_sidecar(ctx.sidecar_path);
+    ctx.offset = 0;
+    ctx.checkpointed_bytes = 0;
+    ctx.attempt.restarted_from_zero = true;
+    return true;
+}
+
+bool adopt_full_response(AttemptContext& ctx, const HttpResponse& response) {
+    ctx.total = response.content_length;
+    ctx.etag = response.etag;
+    ctx.last_modified = response.last_modified;
+    if (ctx.total >= 0) {
+        const StorageResult preallocated = ctx.storage->preallocate(ctx.total);
+        if (storage_error_is_fatal(preallocated.error)) {
+            ctx.write_failed = true;
+            ctx.write_message = preallocated.message.empty()
+                                    ? storage_error_name(preallocated.error)
+                                    : preallocated.message;
+            return false;
+        }
+    }
+    // S5b: without Content-Length the file size cannot be verified, so no sidecar.
+    ctx.if_range = detail::select_if_range(ctx.etag, ctx.last_modified);
+    ctx.checkpoint_enabled = ctx.total > 0 && !ctx.if_range.empty();
+    if (ctx.options->on_resume) {
+        ctx.options->on_resume(0);
+    }
+    ctx.write_allowed = true;
+    return true;
+}
+
+void handle_full_response(AttemptContext& ctx, const HttpResponse& response) {
+    if (ctx.resume != nullptr) {
+        // 200 to a range request: the representation changed or the server ignored Range. The body
+        // is the whole resource, so truncate in place instead of paying for a second request. The
+        // old sidecar must not survive this decision: it points at a prefix being rewritten.
+        if (!restart_at_zero(ctx)) {
+            return;
+        }
+    }
+    static_cast<void>(adopt_full_response(ctx, response));
+}
+
+void handle_response(AttemptContext& ctx, const HttpResponse& response) {
+    if (ctx.response_seen) {
+        return;
+    }
+    ctx.response_seen = true;
+
+    if (ctx.resume != nullptr && response.status == 206) {
+        handle_partial_response(ctx, response);
+        return;
+    }
+    if (response.status >= 200 && response.status < 300 && response.status != 206) {
+        handle_full_response(ctx, response);
+        return;
+    }
+    if (response.status == 206) {
+        ctx.attempt.bad_response = "the server returned a partial response to a full request";
+    }
+    // 4xx/5xx: the body is not the resource. Drain it; the transport reports the status.
+}
+
+HttpRequest build_request(const DownloadOptions& options,
+                          const ResumeState* resume,
+                          const std::string& if_range,
+                          std::int64_t resumed_from) {
     HttpRequest request;
     request.url = options.url;
     request.user_agent = options.user_agent;
@@ -195,153 +350,117 @@ AttemptResult run_attempt(HttpClient& client,
         request.range_length = -1;
         request.headers["If-Range"] = if_range;
     }
+    return request;
+}
 
-    // The transport calls this before the first body byte, which is the only point where the body
-    // sink can learn the file size (preallocation) and the validator (checkpoint decision).
-    request.on_response = [&](const HttpResponse& response) {
-        if (response_seen) {
-            return;
-        }
-        response_seen = true;
-
-        if (resume != nullptr && response.status == 206) {
-            const std::optional<ContentRange> range = parse_content_range(response.content_range);
-            const bool range_ok = range.has_value() && range->has_range() &&
-                                  range->first == resumed_from &&
-                                  (range->last < 0 || range->last == total - 1) &&
-                                  (range->total < 0 || range->total == total);
-            const bool length_ok =
-                response.content_length < 0 || response.content_length == total - resumed_from;
-            // If-Range already asked the server to fall back to 200 on a changed representation;
-            // a 206 that still contradicts the sidecar means the server is not trustworthy. A
-            // header the server omitted cannot contradict the sidecar.
-            const bool validator_ok =
-                is_strong_etag(etag)
-                    ? (response.etag.empty() || response.etag == etag)
-                    : (response.last_modified.empty() || response.last_modified == last_modified);
-            if (!range_ok || !length_ok || !validator_ok) {
-                attempt.restart_fresh = true;
-                write_allowed = false;
-                return;
-            }
-            if (options.on_resume) {
-                options.on_resume(resumed_from);
-            }
-            write_allowed = true;
-            return;
-        }
-
-        if (response.status >= 200 && response.status < 300 && response.status != 206) {
-            const bool was_resuming = resume != nullptr;
-            if (was_resuming) {
-                // 200 to a range request: the representation changed or the server ignored Range.
-                // The body is the whole resource, so truncate in place instead of paying for a
-                // second request. The old sidecar must not survive this decision: it points at a
-                // prefix that is being rewritten.
-                const StorageResult closed = storage.close();
-                const StorageResult reopened =
-                    storage.open(options.output_path, OpenMode::read_write_truncate);
-                if (!closed.ok() || !reopened.ok()) {
-                    write_failed = true;
-                    write_message = !reopened.ok() && !reopened.message.empty()
-                                        ? reopened.message
-                                        : "cannot restart " + options.output_path;
-                    return;
-                }
-                detail::forget_sidecar(sidecar_path);
-                offset = 0;
-                checkpointed_bytes = 0;
-                attempt.restarted_from_zero = true;
-            }
-            total = response.content_length;
-            etag = response.etag;
-            last_modified = response.last_modified;
-            if (total >= 0) {
-                const StorageResult preallocated = storage.preallocate(total);
-                if (storage_error_is_fatal(preallocated.error)) {
-                    write_failed = true;
-                    write_message = preallocated.message.empty()
-                                        ? storage_error_name(preallocated.error)
-                                        : preallocated.message;
-                    return;
-                }
-            }
-            // S5b: without Content-Length the file size cannot be verified, so no sidecar.
-            if_range = detail::select_if_range(etag, last_modified);
-            checkpoint_enabled = total > 0 && !if_range.empty();
-            if (options.on_resume) {
-                options.on_resume(0);
-            }
-            write_allowed = true;
-            return;
-        }
-        if (response.status == 206) {
-            attempt.bad_response = "the server returned a partial response to a full request";
-        }
-        // 4xx/5xx: the body is not the resource. Drain it; the transport reports the status.
-    };
-
-    summary.http = client.get(request, sink, cancel);
-
-    if (attempt.restart_fresh) {
-        // Not an error: the caller drops the sidecar and repeats the request without a range.
-        return attempt;
+void set_attempt_error(AttemptContext& ctx) {
+    if (ctx.write_failed) {
+        ctx.attempt.summary.http.error = HttpError::io;
+        ctx.attempt.summary.message = ctx.write_message.empty()
+                                          ? "failed while writing " + ctx.options->output_path
+                                          : ctx.write_message;
+        return;
     }
-
-    if (write_failed) {
-        summary.http.error = HttpError::io;
-        summary.message =
-            write_message.empty() ? "failed while writing " + options.output_path : write_message;
-    } else if (checkpoint_fatal) {
-        summary.http.error = HttpError::io;
-        summary.message =
-            checkpoint_error.empty() ? "cannot flush the downloaded data" : checkpoint_error;
+    if (ctx.checkpoint_fatal) {
+        ctx.attempt.summary.http.error = HttpError::io;
+        ctx.attempt.summary.message = ctx.checkpoint_error.empty()
+                                          ? "cannot flush the downloaded data"
+                                          : ctx.checkpoint_error;
     }
+}
+
+void complete_transfer(AttemptContext& ctx) {
+    const StorageResult flushed = ctx.storage->flush();
+    if (!flushed.ok()) {
+        ctx.attempt.summary.http.error = HttpError::io;
+        ctx.attempt.summary.message =
+            flushed.message.empty() ? storage_error_name(flushed.error) : flushed.message;
+        return;
+    }
+    // Complete: a stale sidecar would only make the next run re-verify the file.
+    detail::forget_sidecar(ctx.sidecar_path);
+    ctx.attempt.completed = true;
+}
+
+void close_storage(AttemptContext& ctx) {
+    const StorageResult closed = ctx.storage->close();
+    if (!closed.ok() && ctx.attempt.summary.http.ok()) {
+        ctx.attempt.summary.http.error = HttpError::io;
+        ctx.attempt.summary.message =
+            closed.message.empty() ? storage_error_name(closed.error) : closed.message;
+    }
+}
+
+void finish_transfer(AttemptContext& ctx) {
+    DownloadSummary& summary = ctx.attempt.summary;
+    set_attempt_error(ctx);
 
     const bool transfer_ok =
-        summary.http.ok() && write_allowed && !write_failed && !checkpoint_fatal;
+        summary.http.ok() && ctx.write_allowed && !ctx.write_failed && !ctx.checkpoint_fatal;
 
-    if (transfer_ok && total >= 0 && offset != total) {
+    if (transfer_ok && ctx.total >= 0 && ctx.offset != ctx.total) {
         // A short body usually arrives as CURLE_PARTIAL_FILE; this covers a server that closes
         // "cleanly" before the announced length.
         summary.http.error = HttpError::connect;
-        summary.message = "the transfer ended after " + std::to_string(offset) + " of " +
-                          std::to_string(total) + " bytes";
+        summary.message = "the transfer ended after " + std::to_string(ctx.offset) + " of " +
+                          std::to_string(ctx.total) + " bytes";
     }
 
     if (summary.http.ok()) {
-        const StorageResult flushed = storage.flush();
-        if (!flushed.ok()) {
-            summary.http.error = HttpError::io;
-            summary.message =
-                flushed.message.empty() ? storage_error_name(flushed.error) : flushed.message;
-        } else {
-            // Complete: a stale sidecar would only make the next run re-verify the file.
-            detail::forget_sidecar(sidecar_path);
-            attempt.completed = true;
-        }
-    } else if (checkpoint_enabled && offset > checkpointed_bytes) {
+        complete_transfer(ctx);
+    } else if (ctx.checkpoint_enabled && ctx.offset > ctx.checkpointed_bytes) {
         // Cancellation and transport failures keep the durable prefix. A checkpoint failure here
         // is a disk error, not a reason to drop the file: the previous sidecar stays valid.
-        if (!publish()) {
+        if (!publish_checkpoint(ctx)) {
             summary.http.error = HttpError::io;
-            summary.message =
-                checkpoint_error.empty() ? "cannot flush the downloaded data" : checkpoint_error;
+            summary.message = ctx.checkpoint_error.empty() ? "cannot flush the downloaded data"
+                                                           : ctx.checkpoint_error;
         }
     }
 
-    const StorageResult closed = storage.close();
-    if (!closed.ok() && summary.http.ok()) {
-        summary.http.error = HttpError::io;
-        summary.message =
-            closed.message.empty() ? storage_error_name(closed.error) : closed.message;
+    close_storage(ctx);
+
+    if (ctx.attempt.completed) {
+        summary.http.response.content_length = ctx.total;
+    }
+    summary.bytes_written = ctx.offset;
+}
+
+// One request. The caller owns the storage and the retry decision; this function only runs the
+// attempt described by `ctx` and reports how it ended.
+AttemptResult run_attempt(HttpClient& client,
+                          const DownloadOptions& options,
+                          IStorage& storage,
+                          const std::string& sidecar_path,
+                          const ProgressCallback& on_progress,
+                          const std::atomic<bool>* cancel,
+                          std::chrono::milliseconds checkpoint_interval,
+                          const ResumeState* resume) {
+    AttemptContext ctx =
+        make_attempt(options, storage, sidecar_path, on_progress, resume, checkpoint_interval);
+    if (!open_data_file(ctx)) {
+        return std::move(ctx.attempt);
     }
 
-    if (attempt.completed) {
-        summary.http.response.content_length = total;
+    ctx.last_report = std::chrono::steady_clock::now();
+    ctx.next_checkpoint = ctx.last_report + checkpoint_interval;
+
+    HttpRequest request = build_request(options, resume, ctx.if_range, ctx.offset);
+    // The transport calls this before the first body byte, which is the only point where the body
+    // sink can learn the file size (preallocation) and the validator (checkpoint decision).
+    request.on_response = [&ctx](const HttpResponse& response) { handle_response(ctx, response); };
+    const BodySink sink = [&ctx](const std::byte* data, std::size_t size) {
+        return write_body(ctx, data, size);
+    };
+
+    ctx.attempt.summary.http = client.get(request, sink, cancel);
+
+    if (ctx.attempt.restart_fresh) {
+        // Not an error: the caller drops the sidecar and repeats the request without a range.
+        return std::move(ctx.attempt);
     }
-    summary.bytes_written = offset;
-    return attempt;
+    finish_transfer(ctx);
+    return std::move(ctx.attempt);
 }
 
 // A failed transfer keeps the partial file only when a sidecar makes it resumable. Without one
