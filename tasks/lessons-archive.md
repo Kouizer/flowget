@@ -468,3 +468,16 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
   SingleStream testleri 50/50 yeşil; aynı test HEAD'de 300 tekrarda 3 hata veriyor. Kural:
   "şu anki maksimum" gibi zamanlamaya bağlı bir gözlemi değil, motorun garanti ettiği değişmezi
   (tamamlanmamış checkpoint) iddia et.
+
+### 2026-11-26 — Commit bölme betiği pre-commit'ten sonra test dosyalarını yeniden üretti; CI clang-format düştü
+- Belirti: S5b'nin üç commit'i ve style commit'i push'landıktan sonra CI'da clang-format job'u kırmızı
+  döndü; yerelde `pre_commit run --all-files` "Passed" demişti.
+- Kök neden: Dilimi üç commit'e bölen betikler test dosyalarını (`tests/integration/
+  single_stream_download_test.cpp` vb.) commit'ler arasında şablonlardan yeniden üretti.
+  `pre_commit run --all-files` bu üretimden **önce** koştu; denetlenen içerik ile commit'lenen son
+  içerik aynı değildi. Hook ayrıca sahnelenmemiş değişiklikleri stash'lediği için ikinci farkı
+  göstermedi. Yani pre-commit "geçti" derken denetlediği ağaç, push'lanan ağaç değildi.
+- Düzeltme: Son içeriğe clang-format uygulayan style commit'i (`b539da7`) eklendi.
+- Tekrarını önleyen kontrol: pre-commit, commit'lenecek **son** içerikte ve dosya üretiminden SONRA
+  koşar. Push öncesi temiz çalışma ağacında bir kez daha koşulur; çıktıda bütün satırlar "Passed"
+  olmalı. `git status` temizken çalıştırılan hook, push'lanacak ağacın kendisini denetler.

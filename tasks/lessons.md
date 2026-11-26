@@ -85,3 +85,6 @@ kontrol** tutulur; başlık arşivdekiyle birebir aynıdır. Kural: kök neden y
   maksimum `done` yerine tamamlanmamış checkpoint (`0 < done < total`) görüldüğünü iddia et; tam
   checkpoint'in görülmesi zamanlamaya bağlı. Kontrol: düzeltilmiş test ASan'da 50 tekrar yeşil;
   S5b öncesi HEAD'de aynı test 300 tekrarda 3 kez düştü.
+- **2026-11-26 — Commit bölme betiği pre-commit'ten sonra dosya üretti; CI clang-format düştü:**
+  Hook, commit'lenecek **son** içerikte ve üretimden SONRA koşar. Kontrol: push öncesi temiz ağaçta
+  `py -m pre_commit run --all-files`; çıktıda bütün satırlar "Passed".
