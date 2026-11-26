@@ -481,3 +481,19 @@ Aynı hata ikinci kez olursa ilgili test/CI kontrolü eklenir.
 - Tekrarını önleyen kontrol: pre-commit, commit'lenecek **son** içerikte ve dosya üretiminden SONRA
   koşar. Push öncesi temiz çalışma ağacında bir kez daha koşulur; çıktıda bütün satırlar "Passed"
   olmalı. `git status` temizken çalıştırılan hook, push'lanacak ağacın kendisini denetler.
+
+### 2026-11-26 — Checkpoint testinin 300 koşuluk yeniden ölçümü: hata "tam checkpoint" yarışıydı
+- Belirti: `a7a3f4f` 300 ASan koşusunda 3 hata bildirmişti: iki `done == total`, bir "hiç checkpoint yok".
+- Kanıt (enstrümanlı `f749d83` testi, 300 ASan koşusu): 3/300 hata; **üçü de**
+  `highest == 4194304 == payload.size()`. Hiçbir koşuda `file_seen=0`/`parsed=0` yok; süreler
+  2,612–2,651 s; tipik `samples≈52`, `file_seen≈11`.
+- Kök neden: 4 MiB gövde iki 2 MiB aralık @768 KiB/s ≈ 2,67 s; 2 s'lik checkpoint t≈2 s'de
+  `done≈3 MiB` yayınlıyor, sidecar tamamlanınca siliniyor → görünür pencere ~0,6 s. Eski test
+  `highest < total` istediği için yoklayıcı tamamlanma anındaki geçici tam checkpoint'e denk gelince
+  düşüyor. `highest==0` varyantı bu 300'de tekrar üretilmedi; motor **her** koşuda checkpoint
+  yayınladı (`file_seen>0`). Onun tek mekanizması aynı 0,6 s'lik pencereyi 50 ms'lik yoklayıcının
+  yük altında hiç örnekleyememesi (zamanlayıcı gecikmesi); motor checkpoint'i atlamıyor.
+- Düzeltme: `a7a3f4f`'deki `0 < done < total` iddiası doğru; ek kod değişikliği gerekmedi.
+- Tekrarını önleyen kontrol: Düzeltilmiş testler HEAD'de ASan'da 300/300 yeşil (Resume + SingleStream).
+  Kural: zamanlamaya bağlı "maksimum" gözlemi yerine motorun garantili değişmezini iddia et;
+  tekrarında payload'ı uzat veya örnekleme aralığını düşür, iddiayı gevşetme.
