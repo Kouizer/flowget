@@ -83,8 +83,8 @@ kontrol** tutulur; başlık arşivdekiyle birebir aynıdır. Kural: kök neden y
   tek batch medyanıyla "regresyon var" denmez.
 - **2026-11-25 — Checkpoint testi geçici "tam" checkpoint'i yarış olarak görüyordu:** Monotonic
   maksimum `done` yerine tamamlanmamış checkpoint (`0 < done < total`) görüldüğünü iddia et; tam
-  checkpoint'in görülmesi zamanlamaya bağlı. Kontrol: düzeltilmiş test ASan'da 50 tekrar yeşil;
-  S5b öncesi HEAD'de aynı test 300 tekrarda 3 kez düştü.
+  checkpoint'in görülmesi zamanlamaya bağlı. Kontrol: düzeltilmiş test HEAD'de ASan'da 300/300 yeşil;
+  "hiç checkpoint görmedi" türü bir kez görüldü, yeniden üretilemedi.
 - **2026-11-26 — Commit bölme betiği pre-commit'ten sonra dosya üretti; CI clang-format düştü:**
   Hook, commit'lenecek **son** içerikte ve üretimden SONRA koşar. Kontrol: push öncesi temiz ağaçta
   `py -m pre_commit run --all-files`; çıktıda bütün satırlar "Passed".
