@@ -1,6 +1,6 @@
 # FlowGet — Yol Haritası (todo)
 
-> Onay durumu: **ONAYLANDI** — M0 ve M1'in S5a-2b'ye kadarki dilimleri tamamlandı; sırada **S5b**.
+> Onay durumu: **ONAYLANDI** — M0 ve M1'in S5b'ye kadarki dilimleri tamamlandı; sırada **S6**.
 > Kural: Bir madde ancak **kanıtıyla** (test çıktısı, ölçüm, CI linki) kapatılır.
 > **Arşiv:** biten dilimlerin tam planı ve kanıtı [`tasks/archive/`](archive/) altında; ölçüm tabloları
 > [`tasks/measurements.md`](measurements.md). Bu dosya yalnız indekstir; ayrıntı için arşive bak.
@@ -30,7 +30,7 @@
 | S5a-1 | `ResumeState`, atomik yazma, doğrulama | **TAMAMLANDI** | [S5a-1.md](archive/S5a-1.md) |
 | S5a-2a | Motor + `Downloader` (resume, checkpoint) | **TAMAMLANDI** | [S5a-2a.md](archive/S5a-2a.md) |
 | S5a-2b | CLI, Ctrl+C, gerçek süreç testleri | **TAMAMLANDI** | [S5a-2b.md](archive/S5a-2b.md) |
-| S5b | Tek akış devamı + kayıp/performans ölçümleri | **SIRADA** | bu dosya |
+| S5b | Tek akış devamı + kayıp/performans ölçümleri | **TAMAMLANDI** | [S5b.md](archive/S5b.md) |
 | S6 | `RetryPolicy` + `RateLimiter` | | [M1-design.md](archive/M1-design.md) |
 | S7 | `DynamicSplitter` + benchmark tablosu | | bu dosya |
 | S8 | `HashVerifier` + hata modeli + CLI bayrakları + RSS | | bu dosya |
@@ -63,44 +63,22 @@ kesintiden sonra devam ettirilebilir indirmek; UI yok.
   Windows elle doğrulama: 512 MB dosyada Ctrl+C %24,7 → 130, aynı komut `Resuming from 126.5 MiB`,
   SHA-256 `884A240A…F17526` curl ile aynı, `--no-resume` baştan indirip aynı hash'i verdi.
   → [S5a-2b.md](archive/S5a-2b.md)
+- **S5b** — Tek akışta checkpoint + `If-Range` resume; Windows `ctest` 3/3 (**166 test**: 79 birim +
+  84 entegrasyon + 3 süreç), üç Linux preset PASSED, tidy **5**. Kill -9 kaybı 3/3 **~1,01 s**;
+  200 MiB A/B 40 çiftte **1,058** GA [1,039; 1,071], 1 GiB 20 çiftte 0,943 [0,777; 1,123].
+  → [S5b.md](archive/S5b.md)
 
-## S5b — tek akış devamı + ölçümler (sıradaki dilim)
+## S5b — tek akış devamı + ölçümler (TAMAMLANDI)
 
-- [ ] `SingleStreamDownloader` resume: sidecar'daki **flush edilmiş `done`** değeri N ise
-      `Range: bytes=N-` + `If-Range`; 206 → ekle, 200 → truncate + baştan. **N dosya boyutu değildir:**
-      dosya alanı baştan `total_bytes` olarak ayrılır (preallocate), flush edilmemiş baytlar güvenilir
-      değildir; N yalnız checkpoint'in yayınladığı `done`'dan gelir.
-- [ ] Resume yalnız `Content-Length` biliniyorsa yapılır; bilinmiyorsa tek akışta boyut doğrulanamaz →
-      sıfırdan indir.
-- [ ] Sidecar (tek akış): tek segment `[0, total)` + `done`. **`done` < dosyadaki yazılmış bayt** iken
-      (flush edilmemiş kuyruk) resume testi: aynı komut `done`'dan devam eder, SHA-256 eşit.
-- [ ] Ölçüm 1 (kayıp): throttle'lı yerel sunucu, 20 MB/s, %40'ta öldür → yeniden çalıştır; yeniden
-      indirilen veri **≈ checkpoint aralığı** (~2 s'lik veri), SHA-256 eşit. Tabloya işlenir.
-- [ ] Ölçüm 2 (performans, `--connections 1`): A = S5a-2b'nin son commit'indeki (`6bcb0ac`)
-      checkpoint'siz tek akışlı CLI, B = yeni CLI. Loopback ~200 MB, A,B sırayla **en az 20 çift**;
-      eşleşmiş oran (B/A) medyanı + bootstrap %95 GA; sonuç `measurements.md`'ye işlenir.
-- [ ] Doküman: resume varsayılan açık, `--no-resume` kaçış yolu; sidecar M2'de SQLite'a taşınır.
-
-**Riskler**
-
-- 2 s'lik checkpoint 20 MB/s'de ~40 MB kayıp demek; DoD tablosu buna göre güncellendi.
-- `preallocate` EOF'u `total_bytes` yapar; resume `open(read_write)` kullanır, asla `truncate` (S3 dersi).
-- Tek akışta resume başlangıcı dosya boyutundan alınırsa preallocate edilmiş sıfır baytlar atlanır/tekrar
-  yazılır → bozuk dosya; başlangıç yalnız sidecar `done`.
-- Kısmi dosya başka bir dosyaya aitse ve validator yoksa fark edilmez → validator yoksa resume yok.
-- Sidecar salt-okunur dizinde yazılamazsa uyarı + indirme devam (resume verisi kaybolur).
-- Zayıf ETag tek başına yetmez; sunucu `If-Range`'i yok sayıyorsa 200 → sıfırdan (sessiz ekleme yok).
-
-**DoD:** S5a-1/S5a-2/S5b testleri yeşil; Ctrl+C ve kill senaryolarında devam çalışıyor; tek akış A/B
-ölçümü tamamlanıp eşleşmiş oran + GA `measurements.md`'ye işlendi; `check_linux.ps1` üç preset `exit 0`;
-clang-tidy baseline temiz.
+`--connections 1` probe yerine doğrudan `SingleStreamDownloader`'a gider; sidecar'daki flush edilmiş
+`done` → `Range: bytes=N-` + `If-Range`, 200 → sıfırdan; validatorsüz/boyutsuz yanıtta sidecar yok.
+Tam plan, riskler, DoD ve kanıt: [S5b.md](archive/S5b.md); ölçümler: [measurements.md](measurements.md).
 
 ## Sıradaki adımlar
 
-1. **S5b** — yukarıdaki maddeler; ayrı commit + ölçüm kanıtı.
-2. **S6** — `RetryPolicy` (exponential backoff + jitter, `Retry-After`, 429/503'te bağlantı azaltma) ve
+1. **S6** — `RetryPolicy` (exponential backoff + jitter, `Retry-After`, 429/503'te bağlantı azaltma) ve
    `RateLimiter` (global token bucket); testler ve `--rate-limit` bayrağı.
-3. **S7** — `DynamicSplitter` (EWMA) + benchmark tablosu; aşağıdaki tabanla yeniden ölçüm.
+2. **S7** — `DynamicSplitter` (EWMA) + benchmark tablosu; aşağıdaki tabanla yeniden ölçüm.
 
 ## M1 kalan işler (S6–S8, test altyapısı, tuzaklar)
 
@@ -134,6 +112,9 @@ sıra ısınma/önbellek etkisini ayırmaz). Ayrıntı ve metrik tablosu:
 
 - [ ] S5a-2a checkpoint maliyetini **sessiz makinede** yeniden ölç (loopback GA üst ucu +%6,6; tek
       batch'e bakma, eşleşmiş oran + bootstrap GA kullan).
+- [ ] S5b `--connections 1` A/B'sini sessiz makinede, WAN ve gerçek disk üzerinde yeniden ölç;
+      200 MiB'de GA 1,0 dışında kalan +%5,8 (≈6 ms) sabit ek yükün checkpoint işinden (preallocate,
+      sidecar yazma/fsync, final flush/silme) geldiği hipotezini doğrula — **doğrulanmadı**.
 
 ## S8 — ertelenenler
 
@@ -179,7 +160,8 @@ Tam metin: [roadmap-M2-M7.md](archive/roadmap-M2-M7.md).
 
 ## Ölçümler
 
-Metrik hedef tablosu, S7 tabanı ve S5a-2a checkpoint maliyeti: [measurements.md](measurements.md).
+Metrik hedef tablosu, S7 tabanı, S5a-2a checkpoint maliyeti ve S5b kill/A/B ölçümleri:
+[measurements.md](measurements.md).
 Yeni ölçümler oraya eklenir; bu dosyada yalnız bağlantı tutulur.
 
 ## Kapsam dışı (bilinçli)
